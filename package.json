@@ -1,0 +1,25 @@
+{
+  "name": "amiya-atlas",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "svelte-check --tsconfig ./tsconfig.json && vite build",
+    "build:host": "cargo build --manifest-path native-host/Cargo.toml --release && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/copy-native-host.ps1",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "tauri": "tauri",
+    "build:desktop": "npm run build:host && tauri build"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.8.0",
+    "svelte": "^5.38.7"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^6.2.1",
+    "@tauri-apps/cli": "^2.12.1",
+    "svelte-check": "^4.3.1",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.7"
+  }
+}

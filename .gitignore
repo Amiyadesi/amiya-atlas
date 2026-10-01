@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.svelte-kit/
+src-tauri/target/
+src-tauri/gen/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+staging/*
+!staging/README.md
+native-host/*.json
+native-host/*.reg
+native-host/target/
+src-tauri/binaries/
+qa-artifacts/
+extension/dist/
+.DS_Store

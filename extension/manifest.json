@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "Amiya Atlas Capture",
+  "version": "0.1.0",
+  "description": "捕获当前网站并关联本地 Atlas 身份",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA5JfLjzGQRi5SNcIZ8eIyfzo1FpTf+KA8ArIqrW/05aIpgtUhMDpS5eRFhFPC2u3ZKfaq72+ki/ETfJELUxKVG8nlI677M5K85Ax+Z96AgQL7KBMnI2Dv7/0/nuqUqLurT/C9XAwHfU6KwJpvp5cGcQsrTE+jupmLog2aoRkuTw4G7JTL59DWNHCeRbZf+nzsN2M7BRZjDe2LLda4XeeAr8QN8TgK1Bm7RCJkLdxpI/Aj6yqH6gTGy0i0oVtp3nWDNo5GUzEKZGqpxpcHtmUGVltxsmnKfvFK1/Z/7Blvgs6lrdfu8nc3rmn9EDFn9VD844DqalTa4eWVAXXVLYVjOwIDAQAB",
+  "permissions": [
+    "activeTab",
+    "nativeMessaging",
+    "storage"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "加入 Atlas"
+  },
+  "background": { "service_worker": "background.js" }
+}
