@@ -428,10 +428,11 @@
     busy = true;
     error = "";
     try {
-      const next = await saveAiConfig(settingsConfig);
+      const savedConfig = { ...settingsConfig };
+      const next = await saveAiConfig(savedConfig);
       if (token !== epoch) return;
       snapshot = next;
-      config = { ...settingsConfig };
+      config = savedConfig;
       flash("模型设置已保存");
     } catch (e) {
       if (token === epoch) error = readable(e);

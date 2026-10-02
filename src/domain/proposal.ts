@@ -312,10 +312,13 @@ export function searchEntities(
         )),
   );
   if (!q) return candidates;
+  let regionSearch = false;
   const aliases = new Set([q]);
   for (const [code, names] of Object.entries(regionAliases))
-    if ([code.toLowerCase(), ...names].includes(q))
+    if ([code.toLowerCase(), ...names].includes(q)) {
+      regionSearch = true;
       [code.toLowerCase(), ...names].forEach((name) => aliases.add(name));
+    }
   return candidates.filter(
     (e) =>
       e.privacy !== "SECRET" &&
@@ -331,7 +334,13 @@ export function searchEntities(
               : String(f.value),
           ),
       ].some((value) =>
-        [...aliases].some((alias) => normalize(value).includes(alias)),
+        [...aliases].some((alias) =>
+          regionSearch && /^[a-z ]+$/.test(alias)
+            ? new RegExp(`(^|[^a-z0-9])${alias}(?=$|[^a-z0-9])`).test(
+                normalize(value),
+              )
+            : normalize(value).includes(alias),
+        ),
       ),
   );
 }

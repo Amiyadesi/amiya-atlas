@@ -168,6 +168,7 @@ try {
       sample: sample.id,
       seconds: Math.round((performance.now() - start) / 100) / 10,
       entities: proposal.entitiesToCreate.length,
+      updates: proposal.entitiesToUpdate.length,
       relations: proposal.relationsToCreate.length,
       events: proposal.eventsToCreate.length,
       uncertainty: proposal.uncertainty,

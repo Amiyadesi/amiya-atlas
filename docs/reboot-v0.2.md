@@ -30,9 +30,11 @@ Entity / Field / Relation / Event 继续兼容旧数据；Capture / Proposal / �
 
 首次下载分为运行时和模型两部分。运行时固定为 Ollama v0.35.0，并校验官方发布的 SHA-256；校验失败不会解压执行。Windows 运行时下载约 1.5 GB，模型 Qwen3.5 2B Q4_K_M 约 1.9 GB，还需要解压空间。模型不塞入安装包。
 
-模型参数：关闭思考、temperature 0、seed 42、上下文 4096、最大输出 1536 token、4 个 CPU 线程、repeat_penalty 1.0、presence_penalty 0；请求简化生成 Schema 后执行完整校验。Schema 或引用无效时仅重试一次；仍无效则保留原文，不提交实体。运行时禁用云模型，单请求并行、最多一个已加载模型，闲置两分钟卸载。Windows 启动不会弹出终端窗口。
+模型参数：关闭思考、temperature 0、seed 42、上下文 4096、最大输出 1536 token、4 个 CPU 线程、repeat_penalty 1.0、presence_penalty 0；请求简化生成 Schema 后执行完整校验。Schema 或事件引用无效时仅重试一次；仍无效则保留原文，不提交实体。运行时禁用云模型，单请求并行、最多一个已加载模型，闲置两分钟卸载。Windows 启动不会弹出终端窗口。
 
 兼容服务可配置 Base URL、API Key、Model，以及 JSON Schema / JSON Object / 仅提示词三种格式。远程接口要求 HTTPS，本机接口可使用 HTTP。远程输入包含当前原文和最多 12 个候选实体的 ID、名称、类型、状态，不包含已有属性、历史原文或 SECRET 实体。API Key 只作为认证发送给配置的模型服务，在桌面加密库中保存，不进入脱敏导出。
+
+模型提出的关联如果缺少可辨认端点，不自动创建占位实体：保留可辨认实体，把未建立的关联明确放入 uncertainty 供用户检查。生命周期中的实体引用仍需通过校验。
 
 ## 本轮范围
 
@@ -47,3 +49,10 @@ Entity / Field / Relation / Event 继续兼容旧数据；Capture / Proposal / �
 3. 先输入 Saily、SuperGrok，再输入明确的邮箱 / Cloudflare 账号 / 域名关系。
 4. 修改错误理解并确认，搜索“美国”，检查生命周期精度和一跳关联。
 5. 连续三天真实记录：以是否愿意主动打开为标准，暂不扩大功能范围。
+
+## 开发验证
+
+- 12 项前端逻辑测试、9 项 Rust / SQLite 测试、2 条浏览器交互测试；桌面代码另通过 Windows GNU 交叉编译检查。
+- 真实本地 Qwen3.5 2B Q4_K_M：6 种新记忆、1 次已有实体更新、2 种自然语言筛选通过。测试使用合成邮箱，不引入个人清单。
+- 同一开发 CPU 会话：首条 Capture 约 21 秒，热模型 Capture 约 6–10 秒，查询解析约 2 秒。模型错误仍可能发生；约数、地区、关系、不确定项需在预览确认。
+- Windows x64 首次运行时下载、安装和 GPU 推理需在目标电脑首次试玩；Linux 开发环境不代替该平台的安装验证。

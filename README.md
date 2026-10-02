@@ -37,7 +37,9 @@ npm run build:host
 npm run tauri dev
 ```
 
-默认模型验证：在本机默认模型服务运行时，执行 `node scripts/evaluate-local.mjs`。它检查 Saily 号码属性、SuperGrok 月份精度和不续费策略、邮箱 / Cloudflare / 域名关系，不发送用户真实清单。
+默认模型验证：在本机默认模型服务运行时，执行 `node scripts/evaluate-local.mjs`。它检查 Saily、SuperGrok、邮箱 / Cloudflare / 域名、Gmail、HSBC、阿里云杭州、已有记忆更新和两种地区查询，不发送用户真实清单。
+
+本轮真实 CPU 模型回归通过：首条 Saily（含模型加载）约 21 秒，其余 Capture 约 6–10 秒，名称 / 地区查询约 2 秒。这是小样本开发机结果，日常输入仍需要你检查提案。GitHub Actions 的 `atlas-windows-preview` artifact 提供 Windows 预览安装包。
 
 ## 设计与边界
 

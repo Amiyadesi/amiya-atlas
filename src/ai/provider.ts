@@ -50,7 +50,7 @@ export const captureInstructions = `你是 Atlas 的记忆整理器。把用户�
 notes 用用户的语言。attributes 用 snake_case 键，只放已说出的属性。Atlas 会自动附上这次原文，不要编写 evidence 字段。
 地区使用 region=US/JP/CN/HK/TW。中文“块、元”是 CNY，不能变成 USD；“六块多”记 monthly_cost=6、currency=CNY，并填 monthly_cost_approximate=true，notes 保留约数描述。用途用 roles 字符串数组。“先保留”记 decision=Keep。
 新实体用唯一 ref；已有实体用真实 id，列入 entitiesToUpdate，只给出要改的属性。不能随意改名。关系和事件只能引用这次 entitiesToCreate 中的 ref 或 existingEntities 中的真实 id。如果输入提到的实体不在 existingEntities，必须先在 entitiesToCreate 创建，不能只给事件而省掉实体。
-关系方向：账号 AUTHENTICATES_WITH 登录身份；账号 REGISTERED_WITH 邮箱或手机号；账号 RECOVERS_WITH 找回方式；订阅 PAID_BY 卡；域名 MANAGED_BY 服务/账号；项目 HOSTED_ON 服务器；项目 SOURCE_IN 仓库；项目 DEPLOYED_ON 服务。没有明确说出的关系就留空。
+关系方向：账号 AUTHENTICATES_WITH 登录身份；账号 REGISTERED_WITH 邮箱或手机号；账号 RECOVERS_WITH 找回方式；订阅 PAID_BY 卡；域名 MANAGED_BY 服务/账号；项目 HOSTED_ON 服务器；项目 SOURCE_IN 仓库；项目 DEPLOYED_ON 服务。没有明确说出的关系就留空。用途不是关系：“邮箱用来注册账号”只写 roles/notes，没说具体账号名称，不创建账号或 REGISTERED_WITH 关系。
 数量不是身份！“有三个账号，主号是某邮箱，域名在里面”：Account 类型最多创建 1 个可辨认的主账号，再创建邮箱和域名。主账号属性 account_count=3；账号 REGISTERED_WITH 邮箱，域名 MANAGED_BY 主账号。绝不创建“账号2”“账号3”“其他账号”等占位实体，只在 uncertainty 写“另外两个账号未提供身份”。
 日期保持原文精度：“2027 年 8 月” => dueAt="2027-08", precision="month"。禁止补出某一天。日期精度由 Atlas 根据 dueAt 格式自动计算，生成时不用写 precision。未提日期用 dueAt=""。“付到某月，以后不续”创建 EXPIRY 事件，policy=DO_NOT_RENEW。“先保留”不需要事件。
 五个顶层数组必须全部出现：entitiesToCreate、entitiesToUpdate、relationsToCreate、eventsToCreate、uncertainty。不适用的数组填 []。
@@ -304,6 +304,23 @@ class StructuredProvider implements ModelProvider {
         ) {
           proposal.uncertainty.push(
             "提到了多个账号；这里只整理可辨认的身份，其余账号可以以后补充。",
+          );
+        }
+        const known = new Set([
+          ...context.snapshot.entities
+            .filter((entity) => entity.privacy !== "SECRET")
+            .map((entity) => entity.id),
+          ...proposal.entitiesToCreate.map((entity) => entity.ref),
+        ]);
+        const unresolved = proposal.relationsToCreate.filter(
+          (relation) => !known.has(relation.from) || !known.has(relation.to),
+        );
+        if (unresolved.length) {
+          proposal.relationsToCreate = proposal.relationsToCreate.filter(
+            (relation) => known.has(relation.from) && known.has(relation.to),
+          );
+          proposal.uncertainty.push(
+            `${unresolved.length} 条关联缺少可辨认的对象，暂不建立。请补充具体账号或资产名称。`,
           );
         }
         validateProposal(proposal, context.snapshot, text);

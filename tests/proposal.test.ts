@@ -244,6 +244,25 @@ describe("model boundary and factual exploration", () => {
     ).not.toHaveProperty("evidence");
     expect((await loadSnapshot()).entities).toHaveLength(0);
   });
+  it("keeps identifiable memories while surfacing unresolved relation endpoints as uncertainty", async () => {
+    const output = proposal();
+    output.relationsToCreate.push({
+      from: "saily",
+      to: "unidentified-account",
+      type: "REGISTERED_WITH",
+      note: "",
+      evidence: raw,
+    });
+    const transport = vi.fn(async () => JSON.stringify(output));
+    const parsed = await createProvider(
+      DEFAULT_PROVIDER,
+      transport,
+    ).parseCapture(raw, { snapshot: emptySnapshot(), now: "2026-10-02" });
+    expect(parsed.entitiesToCreate).toHaveLength(1);
+    expect(parsed.relationsToCreate).toHaveLength(0);
+    expect(parsed.uncertainty.join(" ")).toContain("缺少可辨认的对象");
+    expect((await loadSnapshot()).entities).toHaveLength(0);
+  });
   it("one-hop expansion does not display every entity or hidden topology", () => {
     const snapshot = demoSnapshot();
     const graph = oneHop(snapshot, ["cloudflare-main"]);
@@ -257,6 +276,13 @@ describe("model boundary and factual exploration", () => {
     expect(
       searchEntities(snapshot, "sayori.org").map((e) => e.id),
     ).not.toContain("domain-sayori");
+  });
+  it("does not mistake user or usage for the US region alias", () => {
+    const snapshot = demoSnapshot();
+    snapshot.entities[0].name = "Useful user account";
+    expect(searchEntities(snapshot, "美国").map((e) => e.id)).toEqual([
+      "sim-saily",
+    ]);
   });
   it("combines name and region filters instead of ignoring one condition", () => {
     const snapshot = demoSnapshot();
