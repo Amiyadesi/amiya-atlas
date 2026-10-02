@@ -25,7 +25,7 @@ struct Manifest { revision: u64, record_hashes: Vec<(String, String)> }
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data")]
-enum Record { Entity(Entity), Relation(Relation), Event(Event) }
+enum Record { Entity(Entity), Relation(Relation), Event(Event), Capture(crate::capture::Capture), Proposal(crate::capture::ProposalRecord), AiConfig(crate::ai::AiConfig) }
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -138,21 +138,23 @@ fn unlock_key(meta: &VaultMeta, password: &str) -> Result<Zeroizing<[u8; 32]>> {
 fn record_hash(record: &EncryptedRecord) -> String { let mut hash = Sha256::new(); hash.update(&record.nonce); hash.update(&record.ciphertext); format!("{:x}", hash.finalize()) }
 pub fn encode_snapshot(key: &[u8; 32], meta: &VaultMeta, snapshot: &Snapshot) -> Result<Vec<EncryptedRecord>> {
     snapshot.validate()?;
-    let logical = snapshot.entities.iter().cloned().map(Record::Entity).chain(snapshot.relations.iter().cloned().map(Record::Relation)).chain(snapshot.events.iter().cloned().map(Record::Event));
+    let logical = snapshot.entities.iter().cloned().map(Record::Entity).chain(snapshot.relations.iter().cloned().map(Record::Relation)).chain(snapshot.events.iter().cloned().map(Record::Event)).chain(snapshot.captures.iter().cloned().map(Record::Capture)).chain(snapshot.proposals.iter().cloned().map(Record::Proposal)).chain(snapshot.ai_config.iter().cloned().map(Record::AiConfig));
     let mut records = Vec::new();
     for record in logical { let row_id = id(); let plain = Zeroizing::new(serde_json::to_vec(&record).map_err(|_| "记录编码失败")?); records.push(CryptoProvider::encrypt(key, row_id.clone(), &plain, &record_aad(meta, &row_id))?); }
     let mut hashes: Vec<_> = records.iter().map(|r| (r.id.clone(), record_hash(r))).collect(); hashes.sort();
     let plain = Zeroizing::new(serde_json::to_vec(&Manifest { revision: snapshot.revision, record_hashes: hashes }).map_err(|_| "完整性清单生成失败")?);
-    records.push(CryptoProvider::encrypt(key, MANIFEST_ID.into(), &plain, &record_aad(meta, MANIFEST_ID))?); Ok(records)
+    records.push(CryptoProvider::encrypt(key, MANIFEST_ID.into(), &plain, &record_aad(meta, MANIFEST_ID))?);
+    if records.len() > 260_002 || records.iter().map(|record| record.ciphertext.len()).sum::<usize>() > 64 * 1024 * 1024 { return Err("记录容量超过限制，未修改数据库".into()); }
+    Ok(records)
 }
 fn decode_snapshot(key: &[u8; 32], meta: &VaultMeta, records: &[EncryptedRecord]) -> Result<Snapshot> {
-    if records.len() > 220_001 || records.iter().map(|r| r.ciphertext.len()).sum::<usize>() > 64 * 1024 * 1024 { return Err("记录容量超过限制".into()); }
+    if records.len() > 260_002 || records.iter().map(|r| r.ciphertext.len()).sum::<usize>() > 64 * 1024 * 1024 { return Err("记录容量超过限制".into()); }
     let mut ids = HashSet::new(); for record in records { if !ids.insert(&record.id) || record.id.len() > 100 { return Err("重复或无效存储 ID".into()); } }
     let manifest = records.iter().find(|r| r.id == MANIFEST_ID).ok_or("完整性清单缺失，数据已损坏")?;
     let plain = CryptoProvider::decrypt(key, manifest, &record_aad(meta, MANIFEST_ID))?; let manifest: Manifest = serde_json::from_slice(&plain).map_err(|_| "完整性清单损坏")?;
     let mut actual: Vec<_> = records.iter().filter(|r| r.id != MANIFEST_ID).map(|r| (r.id.clone(), record_hash(r))).collect(); actual.sort(); if actual != manifest.record_hashes { return Err("完整性校验失败：记录缺失或被篡改".into()); }
     let mut snapshot = Snapshot { revision: manifest.revision, ..Snapshot::default() };
-    for record in records.iter().filter(|r| r.id != MANIFEST_ID) { let bytes = CryptoProvider::decrypt(key, record, &record_aad(meta, &record.id))?; match serde_json::from_slice::<Record>(&bytes).map_err(|_| "加密记录结构损坏")? { Record::Entity(e) => snapshot.entities.push(e), Record::Relation(r) => snapshot.relations.push(r), Record::Event(ev) => snapshot.events.push(ev) } }
+    for record in records.iter().filter(|r| r.id != MANIFEST_ID) { let bytes = CryptoProvider::decrypt(key, record, &record_aad(meta, &record.id))?; match serde_json::from_slice::<Record>(&bytes).map_err(|_| "加密记录结构损坏")? { Record::Entity(e) => snapshot.entities.push(e), Record::Relation(r) => snapshot.relations.push(r), Record::Event(ev) => snapshot.events.push(ev), Record::Capture(c) => snapshot.captures.push(c), Record::Proposal(p) => snapshot.proposals.push(p), Record::AiConfig(c) => { if snapshot.ai_config.replace(c).is_some() { return Err("重复模型配置".into()); } } } }
     snapshot.validate()?; Ok(snapshot)
 }
 pub fn clean_origin(raw: &str) -> Result<String> { let mut parsed = url::Url::parse(raw).map_err(|_| "网页 URL 无效")?; if !["http", "https"].contains(&parsed.scheme()) || parsed.host_str().is_none() { return Err("仅接受 http/https 网页".into()); } parsed.set_username("").map_err(|_| "URL 无效")?; parsed.set_password(None).map_err(|_| "URL 无效")?; Ok(parsed.origin().ascii_serialization()) }

@@ -1,10 +1,17 @@
-export type Privacy = 'PUBLIC' | 'PRIVATE' | 'SECRET';
-export type ValueType = 'text' | 'number' | 'boolean' | 'date' | 'url' | 'json';
-export type EventType = 'EXPIRY' | 'RENEWAL' | 'REVIEW' | 'PAYMENT_DUE' | 'CUSTOM';
-export type EventStatus = 'UPCOMING' | 'DONE' | 'DISMISSED' | 'UNKNOWN';
+export type Privacy = "PUBLIC" | "PRIVATE" | "SECRET";
+export type ValueType = "text" | "number" | "boolean" | "date" | "url" | "json";
+export type EventType =
+  | "EXPIRY"
+  | "RENEWAL"
+  | "REVIEW"
+  | "PAYMENT_DUE"
+  | "CUSTOM"
+  | "CANCELLATION"
+  | "REMINDER";
+export type EventStatus = "UPCOMING" | "DONE" | "DISMISSED" | "UNKNOWN";
 
 export interface SourceOfTruth {
-  kind: 'ATLAS' | 'EXTERNAL';
+  kind: "ATLAS" | "EXTERNAL";
   provider?: string;
   reference?: string;
 }
@@ -48,8 +55,9 @@ export interface LifecycleEvent {
   entityId: string;
   type: EventType;
   dueAt?: string;
+  duePrecision?: "day" | "month" | "year";
   recurrence?: string;
-  policy?: 'AUTO_RENEW' | 'MANUAL' | 'DO_NOT_RENEW' | 'REVIEW';
+  policy?: "AUTO_RENEW" | "MANUAL" | "DO_NOT_RENEW" | "REVIEW";
   status: EventStatus;
   note?: string;
 }
@@ -59,6 +67,9 @@ export interface VaultSnapshot {
   entities: Entity[];
   relations: Relation[];
   events: LifecycleEvent[];
+  captures?: import("../domain/proposal").TextCapture[];
+  proposals?: import("../domain/proposal").ProposalRecord[];
+  aiConfig?: import("../ai/provider").ProviderConfig;
 }
 
 export interface VaultStatus {
@@ -89,42 +100,229 @@ export interface Template {
   id: string;
   label: string;
   category: string;
-  fields: Array<{ key: string; valueType: ValueType; privacy: Privacy; searchable: boolean }>;
+  fields: Array<{
+    key: string;
+    valueType: ValueType;
+    privacy: Privacy;
+    searchable: boolean;
+  }>;
 }
 
 export const RELATION_TYPES = [
-  'REGISTERED_WITH',
-  'AUTHENTICATES_WITH',
-  'RECOVERS_WITH',
-  'OWNS_ADDRESS',
-  'MANAGES',
-  'USES',
-  'DEPENDS_ON',
-  'HOSTS',
-  'HOSTED_ON',
-  'CONNECTED_VIA',
-  'EXPOSED_AT',
-  'SOURCE_IN',
-  'DEPLOYED_ON',
-  'PAID_BY',
-  'BILLED_FOR',
-  'ISSUED_BY',
-  'STORED_IN',
-  'RELATED_TO'
+  "REGISTERED_WITH",
+  "AUTHENTICATES_WITH",
+  "RECOVERS_WITH",
+  "OWNS_ADDRESS",
+  "MANAGES",
+  "USES",
+  "DEPENDS_ON",
+  "HOSTS",
+  "HOSTED_ON",
+  "CONNECTED_VIA",
+  "EXPOSED_AT",
+  "SOURCE_IN",
+  "DEPLOYED_ON",
+  "PAID_BY",
+  "BILLED_FOR",
+  "ISSUED_BY",
+  "STORED_IN",
+  "RELATED_TO",
+  "OWNS",
+  "MANAGED_BY",
 ] as const;
 
 export const TEMPLATES: Template[] = [
-  { id: 'email', label: 'Email', category: 'Email', fields: [{ key: 'address', valueType: 'text', privacy: 'PRIVATE', searchable: true }, { key: 'provider', valueType: 'text', privacy: 'PRIVATE', searchable: true }, { key: 'region', valueType: 'text', privacy: 'PRIVATE', searchable: true }] },
-  { id: 'identity', label: 'Identity', category: 'Identity', fields: [{ key: 'provider', valueType: 'text', privacy: 'PRIVATE', searchable: true }, { key: 'region', valueType: 'text', privacy: 'PRIVATE', searchable: true }, { key: 'role', valueType: 'text', privacy: 'PRIVATE', searchable: true }] },
-  { id: 'website-account', label: 'Website Account', category: 'Website Account', fields: [{ key: 'origin', valueType: 'url', privacy: 'PRIVATE', searchable: true }, { key: 'username', valueType: 'text', privacy: 'PRIVATE', searchable: true }] },
-  { id: 'server', label: 'Server', category: 'Server', fields: [{ key: 'provider', valueType: 'text', privacy: 'PRIVATE', searchable: true }, { key: 'region', valueType: 'text', privacy: 'PRIVATE', searchable: true }, { key: 'role', valueType: 'text', privacy: 'PRIVATE', searchable: true }] },
-  { id: 'domain', label: 'Domain', category: 'Domain', fields: [{ key: 'fqdn', valueType: 'text', privacy: 'PRIVATE', searchable: true }, { key: 'registrar', valueType: 'text', privacy: 'PRIVATE', searchable: true }] },
-  { id: 'sim', label: 'SIM / Phone', category: 'SIM', fields: [{ key: 'country', valueType: 'text', privacy: 'PRIVATE', searchable: true }, { key: 'carrier', valueType: 'text', privacy: 'PRIVATE', searchable: true }, { key: 'role', valueType: 'text', privacy: 'PRIVATE', searchable: true }] },
-  { id: 'subscription', label: 'Subscription', category: 'Subscription', fields: [{ key: 'provider', valueType: 'text', privacy: 'PRIVATE', searchable: true }, { key: 'cost', valueType: 'text', privacy: 'PRIVATE', searchable: true }, { key: 'renewal', valueType: 'text', privacy: 'PRIVATE', searchable: true }] },
-  { id: 'project', label: 'Project', category: 'Project', fields: [{ key: 'purpose', valueType: 'text', privacy: 'PRIVATE', searchable: true }, { key: 'url', valueType: 'url', privacy: 'PRIVATE', searchable: true }] },
-  { id: 'repository', label: 'Repository', category: 'Repository', fields: [{ key: 'host', valueType: 'text', privacy: 'PRIVATE', searchable: true }, { key: 'url', valueType: 'url', privacy: 'PRIVATE', searchable: true }] },
-  { id: 'ai-provider-account', label: 'AI Provider Account', category: 'AI Provider Account', fields: [{ key: 'provider', valueType: 'text', privacy: 'PRIVATE', searchable: true }, { key: 'plan', valueType: 'text', privacy: 'PRIVATE', searchable: true }, { key: 'role', valueType: 'text', privacy: 'PRIVATE', searchable: true }] },
-  { id: 'payment-card', label: 'Payment Card', category: 'Payment Card', fields: [{ key: 'issuer', valueType: 'text', privacy: 'PRIVATE', searchable: true }, { key: 'last4', valueType: 'text', privacy: 'PRIVATE', searchable: true }, { key: 'expires', valueType: 'date', privacy: 'PRIVATE', searchable: true }] }
+  {
+    id: "email",
+    label: "Email",
+    category: "Email",
+    fields: [
+      {
+        key: "address",
+        valueType: "text",
+        privacy: "PRIVATE",
+        searchable: true,
+      },
+      {
+        key: "provider",
+        valueType: "text",
+        privacy: "PRIVATE",
+        searchable: true,
+      },
+      {
+        key: "region",
+        valueType: "text",
+        privacy: "PRIVATE",
+        searchable: true,
+      },
+    ],
+  },
+  {
+    id: "identity",
+    label: "Identity",
+    category: "Identity",
+    fields: [
+      {
+        key: "provider",
+        valueType: "text",
+        privacy: "PRIVATE",
+        searchable: true,
+      },
+      {
+        key: "region",
+        valueType: "text",
+        privacy: "PRIVATE",
+        searchable: true,
+      },
+      { key: "role", valueType: "text", privacy: "PRIVATE", searchable: true },
+    ],
+  },
+  {
+    id: "website-account",
+    label: "Website Account",
+    category: "Website Account",
+    fields: [
+      { key: "origin", valueType: "url", privacy: "PRIVATE", searchable: true },
+      {
+        key: "username",
+        valueType: "text",
+        privacy: "PRIVATE",
+        searchable: true,
+      },
+    ],
+  },
+  {
+    id: "server",
+    label: "Server",
+    category: "Server",
+    fields: [
+      {
+        key: "provider",
+        valueType: "text",
+        privacy: "PRIVATE",
+        searchable: true,
+      },
+      {
+        key: "region",
+        valueType: "text",
+        privacy: "PRIVATE",
+        searchable: true,
+      },
+      { key: "role", valueType: "text", privacy: "PRIVATE", searchable: true },
+    ],
+  },
+  {
+    id: "domain",
+    label: "Domain",
+    category: "Domain",
+    fields: [
+      { key: "fqdn", valueType: "text", privacy: "PRIVATE", searchable: true },
+      {
+        key: "registrar",
+        valueType: "text",
+        privacy: "PRIVATE",
+        searchable: true,
+      },
+    ],
+  },
+  {
+    id: "sim",
+    label: "SIM / Phone",
+    category: "SIM",
+    fields: [
+      {
+        key: "country",
+        valueType: "text",
+        privacy: "PRIVATE",
+        searchable: true,
+      },
+      {
+        key: "carrier",
+        valueType: "text",
+        privacy: "PRIVATE",
+        searchable: true,
+      },
+      { key: "role", valueType: "text", privacy: "PRIVATE", searchable: true },
+    ],
+  },
+  {
+    id: "subscription",
+    label: "Subscription",
+    category: "Subscription",
+    fields: [
+      {
+        key: "provider",
+        valueType: "text",
+        privacy: "PRIVATE",
+        searchable: true,
+      },
+      { key: "cost", valueType: "text", privacy: "PRIVATE", searchable: true },
+      {
+        key: "renewal",
+        valueType: "text",
+        privacy: "PRIVATE",
+        searchable: true,
+      },
+    ],
+  },
+  {
+    id: "project",
+    label: "Project",
+    category: "Project",
+    fields: [
+      {
+        key: "purpose",
+        valueType: "text",
+        privacy: "PRIVATE",
+        searchable: true,
+      },
+      { key: "url", valueType: "url", privacy: "PRIVATE", searchable: true },
+    ],
+  },
+  {
+    id: "repository",
+    label: "Repository",
+    category: "Repository",
+    fields: [
+      { key: "host", valueType: "text", privacy: "PRIVATE", searchable: true },
+      { key: "url", valueType: "url", privacy: "PRIVATE", searchable: true },
+    ],
+  },
+  {
+    id: "ai-provider-account",
+    label: "AI Provider Account",
+    category: "AI Provider Account",
+    fields: [
+      {
+        key: "provider",
+        valueType: "text",
+        privacy: "PRIVATE",
+        searchable: true,
+      },
+      { key: "plan", valueType: "text", privacy: "PRIVATE", searchable: true },
+      { key: "role", valueType: "text", privacy: "PRIVATE", searchable: true },
+    ],
+  },
+  {
+    id: "payment-card",
+    label: "Payment Card",
+    category: "Payment Card",
+    fields: [
+      {
+        key: "issuer",
+        valueType: "text",
+        privacy: "PRIVATE",
+        searchable: true,
+      },
+      { key: "last4", valueType: "text", privacy: "PRIVATE", searchable: true },
+      {
+        key: "expires",
+        valueType: "date",
+        privacy: "PRIVATE",
+        searchable: true,
+      },
+    ],
+  },
 ];
 
 export function emptySnapshot(): VaultSnapshot {
