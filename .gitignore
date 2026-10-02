@@ -15,3 +15,6 @@ src-tauri/binaries/
 qa-artifacts/
 extension/dist/
 .DS_Store
+
+test-results/
+playwright-report/

@@ -1,335 +1,1096 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { isTauri, vaultStatus, initializeVault, unlockVault, loadSnapshot, lockVault, saveSnapshot, exportBackup, importBackup, previewAtlasJson, importAtlasJson, exportRedacted as exportRedactedJson, openVaultwarden } from './lib/api';
-  import { demoSnapshot } from './lib/demo';
-  import { emptySnapshot, newId, nowIso, RELATION_TYPES, TEMPLATES } from './lib/types';
-  import type { Entity, Field, ImportPreview, LifecycleEvent, Privacy, Relation, ValueType, VaultSnapshot } from './lib/types';
+  import { onMount } from "svelte";
+  import { listen } from "@tauri-apps/api/event";
+  import {
+    isTauri,
+    vaultStatus,
+    initializeVault,
+    unlockVault,
+    loadSnapshot,
+    lockVault,
+    beginTextCapture,
+    stageProposal,
+    confirmProposal,
+    reviseProposal,
+    dismissCapture,
+    saveAiConfig,
+    prepareLocalModel,
+    exportBackup,
+    importBackup,
+    exportRedacted,
+    previewAtlasJson,
+    importAtlasJson,
+  } from "./lib/api";
+  import { emptySnapshot } from "./lib/types";
+  import type { Entity, VaultSnapshot } from "./lib/types";
+  import { DEFAULT_PROVIDER, createProvider } from "./ai/provider";
+  import type { ProviderConfig } from "./ai/provider";
+  import {
+    matchEntities,
+    searchEntities,
+    validateProposal,
+    attributeLabel,
+  } from "./domain/proposal";
+  import type { Proposal, TextCapture } from "./domain/proposal";
+  import ProposalPreview from "./features/capture/ProposalPreview.svelte";
+  import ExploreCanvas from "./features/graph/ExploreCanvas.svelte";
 
-  type Mode = 'loading' | 'create' | 'unlock' | 'ready';
-  let mode: Mode = 'loading';
+  type Page = "Home" | "Search" | "Memory" | "Explore" | "Inbox" | "Settings";
+  const pages: Page[] = [
+    "Home",
+    "Search",
+    "Memory",
+    "Explore",
+    "Inbox",
+    "Settings",
+  ];
+  const labels: Record<Page, string> = {
+    Home: "首页",
+    Search: "搜索",
+    Memory: "记忆",
+    Explore: "探索",
+    Inbox: "待确认",
+    Settings: "设置",
+  };
+  const symbols: Record<Page, string> = {
+    Home: "⌂",
+    Search: "⌕",
+    Memory: "▤",
+    Explore: "◇",
+    Inbox: "▱",
+    Settings: "⚙",
+  };
+  let mode: "loading" | "create" | "unlock" | "ready" = "loading";
   let snapshot: VaultSnapshot = emptySnapshot();
-  let password = '';
-  let passwordConfirm = '';
-  let query = '';
-  let activeNav = 'all';
-  let selectedId = '';
-  let error = '';
-  let notice = '';
-  let showAdd = false;
-  let showRelation = false;
-  let showEvent = false;
-  let showField = false;
-  let pendingImport: { text: string; preview: ImportPreview } | null = null;
-  let saving = false;
-  let editing = false;
-  let addMode: 'quick' | 'template' = 'quick';
-  let addName = '';
-  let addTemplate = 'project';
-  let addTags = '';
-  let addValue = '';
-  let relationType = 'RELATED_TO';
-  let relationTarget = '';
-  let relationNote = '';
-  let eventType = 'REVIEW';
-  let eventDueAt = '';
-  let eventPolicy = 'REVIEW';
-  let eventNote = '';
-  let editName = '';
-  let editStatus = '';
-  let editTags = '';
-  let editingFieldId = '';
-  let fieldKey = '';
-  let fieldValueType: ValueType = 'text';
-  let fieldValue = '';
-  let fieldPrivacy: Privacy = 'PRIVATE';
-  let fieldSearchable = true;
-  let fieldSourceProvider = '';
-  let fieldSourceReference = '';
-  let importInput: HTMLInputElement;
-  let backupInput: HTMLInputElement;
+  let page: Page = "Home";
+  let password = "";
+  let passwordConfirm = "";
+  let text = "";
+  let query = "";
+  let queryAnswer = "";
+  let queryRegion = "";
+  let busy = false;
+  let modelBusy = false;
+  let parsingId = "";
+  let error = "";
+  let notice = "";
+  let selectedId = "";
+  let rootId = "";
+  let previewId = "";
+  let config: ProviderConfig = { ...DEFAULT_PROVIDER };
+  let settingsConfig: ProviderConfig = { ...DEFAULT_PROVIDER };
+  let connection = "";
+  let progress = { stage: "", completed: 0, total: 0 };
+  let captureInput: HTMLTextAreaElement;
+  let epoch = 0;
+  let pendingImport: { text: string; summary: string } | null = null;
+  const samples = [
+    "Saily 是我唯一一个美国 +1 号码，一个月六块多，主要备用和收藏，目前先保留。",
+    "SuperGrok 已经付到 2026 年 12 月，以后不续。",
+    "我刚注册了一个日本网站，用日本 Google 大号登录。",
+  ];
+  $: pending = (snapshot.captures ?? [])
+    .filter((c) => c.status === "PENDING")
+    .sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+  $: preview = snapshot.proposals?.find(
+    (p) => p.id === previewId && p.status === "PENDING",
+  );
+  $: previewCapture = snapshot.captures?.find(
+    (c) => c.id === preview?.captureId,
+  );
+  $: recent = snapshot.entities
+    .filter((e) => e.privacy !== "SECRET")
+    .slice()
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    .slice(0, 6);
+  $: results = searchEntities(snapshot, query, queryRegion);
+  $: selected = snapshot.entities.find(
+    (e) => e.id === selectedId && e.privacy !== "SECRET",
+  );
+  $: upcoming = snapshot.events
+    .filter((e) => e.status === "UPCOMING" || e.status === "UNKNOWN")
+    .slice()
+    .sort((a, b) => (a.dueAt ?? "9999").localeCompare(b.dueAt ?? "9999"))
+    .slice(0, 4);
+  $: selectedRelations = selected
+    ? snapshot.relations.filter(
+        (r) =>
+          r.privacy !== "SECRET" &&
+          (r.sourceId === selected.id || r.targetId === selected.id) &&
+          snapshot.entities.find((e) => e.id === r.sourceId)?.privacy !==
+            "SECRET" &&
+          snapshot.entities.find((e) => e.id === r.targetId)?.privacy !==
+            "SECRET",
+      )
+    : [];
+  $: sources = selected
+    ? (snapshot.proposals ?? [])
+        .filter(
+          (p) => p.status === "CONFIRMED" && p.entityIds.includes(selected.id),
+        )
+        .map((p) => snapshot.captures?.find((c) => c.id === p.captureId))
+        .filter((c): c is TextCapture => !!c)
+    : [];
 
-  $: selected = snapshot.entities.find((item) => item.id === selectedId) ?? snapshot.entities[0];
-  $: if (selected && !editing) { editName = selected.name; editStatus = selected.status; editTags = selected.tags.join(', '); }
-  $: inbound = selected ? snapshot.relations.filter((item) => item.targetId === selected.id) : [];
-  $: outbound = selected ? snapshot.relations.filter((item) => item.sourceId === selected.id) : [];
-  $: relatedIds = new Set([...inbound.map((item) => item.sourceId), ...outbound.map((item) => item.targetId)]);
-  $: searchText = query.trim().toLowerCase();
-  $: visibleEntities = snapshot.entities.filter((item) => {
-    const matchesNav = activeNav === 'all' || activeNav === 'inbox' && item.status === 'NEEDS_REVIEW' || activeNav === 'expiring' && snapshot.events.some((event) => event.entityId === item.id && event.status === 'UPCOMING' && event.dueAt && new Date(event.dueAt).getTime() < Date.now() + 90 * 86_400_000) || activeNav === item.category;
-    const searchable = [item.name, item.category, item.status, ...item.tags, ...item.fields.filter((field) => field.searchable && field.privacy !== 'SECRET').map((field) => `${field.key} ${String(field.value)}`)].join(' ').toLowerCase();
-    const relatedMatch = snapshot.relations.some((rel) => (rel.sourceId === item.id || rel.targetId === item.id) && snapshot.entities.find((e) => e.id === (rel.sourceId === item.id ? rel.targetId : rel.sourceId))?.name.toLowerCase().includes(searchText));
-    return matchesNav && (!searchText || searchable.includes(searchText) || relatedMatch);
-  });
-  $: categories = ['Identity', 'Email', 'Website Account', 'Domain', 'Server', 'Project', 'Subscription', 'SIM', 'Repository', 'AI Provider Account', 'Payment Card'];
-  $: expiringCount = snapshot.events.filter((event) => event.status === 'UPCOMING' && event.dueAt && new Date(event.dueAt).getTime() < Date.now() + 90 * 86_400_000).length;
-
-  onMount(() => {
-    let timer: number | undefined;
-    const openQuickAdd = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
-        event.preventDefault();
-        if (mode === 'ready') { showAdd = true; addMode = 'quick'; }
-      }
-    };
-    const sync = () => { if (document.visibilityState === 'visible') void syncFromBackend(true); };
-    window.addEventListener('keydown', openQuickAdd);
-    window.addEventListener('focus', sync);
-    document.addEventListener('visibilitychange', sync);
-    if (isTauri) timer = window.setInterval(() => void syncFromBackend(), 30_000);
-    void initialize();
-    return () => {
-      window.removeEventListener('keydown', openQuickAdd);
-      window.removeEventListener('focus', sync);
-      document.removeEventListener('visibilitychange', sync);
-      if (timer !== undefined) window.clearInterval(timer);
-    };
-
-    async function initialize() {
-      try {
-        const status = await vaultStatus();
-        if (!isTauri) { snapshot = demoSnapshot(); selectedId = snapshot.entities[0]?.id ?? ''; mode = 'ready'; return; }
-        mode = status.exists ? status.unlocked ? 'ready' : 'unlock' : 'create';
-        if (status.unlocked) { snapshot = await loadSnapshot(); selectedId = snapshot.entities[0]?.id ?? ''; }
-      } catch (e) { error = readableError(e); mode = 'create'; }
-    }
-  });
-
-  function readableError(e: unknown): string { return e instanceof Error ? e.message : typeof e === 'string' ? e : '操作失败'; }
-  function selectEntity(id: string) { selectedId = id; editing = false; }
-  function navMatches(entity: Entity, label: string): boolean {
-    return label === 'all' || label === 'inbox' && entity.status === 'NEEDS_REVIEW' || label === 'expiring' && snapshot.events.some((event) => event.entityId === entity.id && event.status === 'UPCOMING' && event.dueAt && new Date(event.dueAt).getTime() < Date.now() + 90 * 86_400_000) || label === entity.category;
+  const readable = (e: unknown) => (e instanceof Error ? e.message : String(e));
+  function flash(message: string) {
+    notice = message;
   }
-  function nav(label: string) { activeNav = label; selectedId = snapshot.entities.find((entity) => navMatches(entity, label))?.id ?? ''; }
-  function templateLabel(category: string) { return TEMPLATES.find((template) => template.category === category)?.label ?? category; }
-  function getField(entity: Entity | undefined, key: string): string { return String(entity?.fields.find((field) => field.key === key)?.value ?? ''); }
-  function fieldDisplay(field: Field): string { return field.valueType === 'json' ? JSON.stringify(field.value) : String(field.value ?? ''); }
-  function entityName(id: string): string { return snapshot.entities.find((item) => item.id === id)?.name ?? '未知实体'; }
-  function entityCategory(id: string): string { return snapshot.entities.find((item) => item.id === id)?.category ?? ''; }
-  function formatDate(value?: string): string { if (!value) return '未设置'; const date = new Date(value); return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' }); }
-  function daysUntil(value?: string): string { if (!value) return ''; const days = Math.ceil((new Date(value).getTime() - Date.now()) / 86_400_000); return days < 0 ? '已过期' : `${days} 天后`; }
-
-  function clearLockedState() {
-    snapshot = emptySnapshot(); selectedId = ''; query = ''; editing = false; showAdd = false; showRelation = false; showEvent = false; showField = false; pendingImport = null; password = ''; passwordConfirm = '';
+  function name(id: string) {
+    return snapshot.entities.find((e) => e.id === id)?.name ?? "未知记忆";
   }
-
-  async function syncFromBackend(force = false) {
-    if (!isTauri || mode !== 'ready' || saving) return;
+  function display(value: unknown) {
+    return Array.isArray(value)
+      ? value.join(" · ")
+      : typeof value === "object"
+        ? JSON.stringify(value)
+        : String(value ?? "");
+  }
+  function date(value?: string) {
+    if (!value) return "日期待定";
+    if (/^\d{4}(-\d{2})?$/.test(value)) return value;
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? value : d.toLocaleDateString("zh-CN");
+  }
+  function navigate(next: Page) {
+    page = next;
+    selectedId = "";
+    previewId = "";
+    error = "";
+    queryAnswer = "";
+    queryRegion = "";
+    if (next === "Explore" && !rootId) rootId = recent[0]?.id ?? "";
+  }
+  function openEntity(id: string) {
+    selectedId = id;
+    page = "Memory";
+    previewId = "";
+    error = "";
+  }
+  function explore(id: string) {
+    selectedId = "";
+    rootId = id;
+    page = "Explore";
+  }
+  function configure(kind: ProviderConfig["kind"]) {
+    settingsConfig =
+      kind === "local"
+        ? { ...DEFAULT_PROVIDER }
+        : {
+            kind,
+            baseUrl:
+              kind === "ollama"
+                ? "http://localhost:11434"
+                : "https://api.example.com/v1",
+            model: kind === "ollama" ? "qwen3.5:2b-q4_K_M" : "",
+            apiKey: "",
+            responseFormat: kind === "ollama" ? "json_schema" : "json_object",
+          };
+    connection = "";
+  }
+  function clearPrivateState() {
+    epoch++;
+    snapshot = emptySnapshot();
+    text = "";
+    query = "";
+    selectedId = "";
+    rootId = "";
+    previewId = "";
+    password = "";
+    passwordConfirm = "";
+    config = { ...DEFAULT_PROVIDER };
+    settingsConfig = { ...DEFAULT_PROVIDER };
+    busy = false;
+    parsingId = "";
+    notice = "";
+    error = "";
+    pendingImport = null;
+    queryAnswer = "";
+    queryRegion = "";
+    connection = "";
+  }
+  async function sync() {
+    if (!isTauri || mode !== "ready" || busy) return;
+    const token = epoch;
+    const revision = snapshot.revision;
     try {
       const status = await vaultStatus();
-      if (!status.unlocked) { mode = 'unlock'; clearLockedState(); return; }
+      if (token !== epoch || mode !== "ready") return;
+      if (!status.unlocked) {
+        clearPrivateState();
+        mode = "unlock";
+        return;
+      }
       const fresh = await loadSnapshot();
-      if (force || fresh.revision !== snapshot.revision) {
-        const currentId = selectedId;
+      if (
+        token === epoch &&
+        mode === "ready" &&
+        !busy &&
+        revision === snapshot.revision &&
+        fresh.revision !== snapshot.revision
+      )
         snapshot = fresh;
-        selectedId = snapshot.entities.some((entity) => entity.id === currentId) ? currentId : snapshot.entities[0]?.id ?? '';
+    } catch (e) {
+      error = readable(e);
+    }
+  }
+  onMount(() => {
+    let unlisten: (() => void) | undefined;
+    let alive = true;
+    if (isTauri)
+      void listen<typeof progress>("atlas-model-progress", (event) => {
+        if (alive) progress = event.payload;
+      }).then((fn) => {
+        if (alive) unlisten = fn;
+        else fn();
+      });
+    const keydown = (e: KeyboardEvent) => {
+      if (
+        mode === "ready" &&
+        (e.ctrlKey || e.metaKey) &&
+        e.key.toLowerCase() === "k"
+      ) {
+        e.preventDefault();
+        navigate("Home");
+        queueMicrotask(() => captureInput?.focus());
+      }
+    };
+    const focus = () => void sync();
+    window.addEventListener("keydown", keydown);
+    window.addEventListener("focus", focus);
+    const timer = window.setInterval(() => void sync(), 30000);
+    void (async () => {
+      try {
+        const status = await vaultStatus();
+        mode = !status.exists ? "create" : status.unlocked ? "ready" : "unlock";
+        if (status.unlocked) {
+          snapshot = await loadSnapshot();
+          config = { ...(snapshot.aiConfig ?? DEFAULT_PROVIDER) };
+          settingsConfig = { ...config };
+        }
+      } catch (e) {
+        error = readable(e);
+        mode = "unlock";
+      }
+    })();
+    return () => {
+      alive = false;
+      epoch++;
+      unlisten?.();
+      window.clearInterval(timer);
+      window.removeEventListener("keydown", keydown);
+      window.removeEventListener("focus", focus);
+    };
+  });
+  async function enter() {
+    if (busy) return;
+    busy = true;
+    error = "";
+    try {
+      if (
+        mode === "create" &&
+        (password.length < 12 || password !== passwordConfirm)
+      )
+        throw new Error(
+          password.length < 12 ? "主密码至少 12 个字符" : "两次密码不一致",
+        );
+      snapshot =
+        mode === "create"
+          ? await initializeVault(password)
+          : await unlockVault(password);
+      mode = "ready";
+      password = "";
+      passwordConfirm = "";
+      config = { ...(snapshot.aiConfig ?? DEFAULT_PROVIDER) };
+      settingsConfig = { ...config };
+    } catch (e) {
+      error = readable(e);
+    } finally {
+      busy = false;
+    }
+  }
+  async function lock() {
+    try {
+      await lockVault();
+      clearPrivateState();
+      mode = "unlock";
+    } catch (e) {
+      error = readable(e);
+    }
+  }
+  async function parseCapture(capture: TextCapture, ownsBusy = false) {
+    const token = epoch;
+    parsingId = capture.id;
+    if (!ownsBusy) busy = true;
+    error = "";
+    notice = "";
+    try {
+      const content = await createProvider(config).parseCapture(
+        capture.rawText,
+        { snapshot, now: new Date().toISOString() },
+      );
+      if (token !== epoch || mode !== "ready") return;
+      // Matching uses fresh metadata after the model response; the native commit guards any subsequent edits.
+      const fresh = await loadSnapshot();
+      const matched = matchEntities(content, fresh, capture.rawText);
+      const next = await stageProposal(capture.id, matched, config.model);
+      if (token !== epoch) return;
+      snapshot = next;
+      previewId =
+        snapshot.proposals?.find(
+          (p) => p.captureId === capture.id && p.status === "PENDING",
+        )?.id ?? "";
+      page = "Inbox";
+    } catch (e) {
+      if (token === epoch) {
+        error = `${readable(e)} 原文已保留在待确认区。`;
+        page = "Inbox";
+      }
+    } finally {
+      if (token === epoch) {
+        busy = false;
+        parsingId = "";
+      }
+    }
+  }
+  async function capture() {
+    if (!text.trim() || busy) return;
+    busy = true;
+    error = "";
+    const token = epoch;
+    try {
+      const before = new Set((snapshot.captures ?? []).map((c) => c.id));
+      const next = await beginTextCapture(text);
+      if (token !== epoch) return;
+      snapshot = next;
+      text = "";
+      const input = snapshot.captures?.find((c) => !before.has(c.id));
+      if (!input) throw new Error("原文保存失败");
+      await parseCapture(input, true);
+    } catch (e) {
+      if (token === epoch) {
+        error = readable(e);
+        busy = false;
+      }
+    }
+  }
+  async function confirm(content: Proposal) {
+    if (!preview || !previewCapture || busy) return;
+    validateProposal(content, snapshot, previewCapture.rawText);
+    const id = preview.id;
+    const token = epoch;
+    busy = true;
+    try {
+      const next = await confirmProposal(id, content);
+      if (token !== epoch) return;
+      snapshot = next;
+      const record = snapshot.proposals?.find((p) => p.id === id);
+      previewId = "";
+      flash("已记住。原文也一起保留了。");
+      if (record?.entityIds[0]) openEntity(record.entityIds[0]);
+    } finally {
+      if (token === epoch) busy = false;
+    }
+  }
+  async function later(content: Proposal) {
+    if (!preview || busy) return;
+    const token = epoch;
+    busy = true;
+    try {
+      const next = await reviseProposal(preview.id, content);
+      if (token !== epoch) return;
+      snapshot = next;
+      previewId = "";
+      flash("修改已保留，提案仍在待确认区。");
+    } finally {
+      if (token === epoch) busy = false;
+    }
+  }
+  async function dismiss(captureId: string) {
+    if (busy) return;
+    const token = epoch;
+    busy = true;
+    try {
+      const next = await dismissCapture(captureId);
+      if (token !== epoch) return;
+      snapshot = next;
+      previewId = "";
+      flash("已移出待确认区，原文仍保留。");
+    } catch (e) {
+      if (token === epoch) error = readable(e);
+    } finally {
+      if (token === epoch) busy = false;
+    }
+  }
+  async function saveSettings() {
+    if (busy) return;
+    const token = epoch;
+    busy = true;
+    error = "";
+    try {
+      const next = await saveAiConfig(settingsConfig);
+      if (token !== epoch) return;
+      snapshot = next;
+      config = { ...settingsConfig };
+      flash("模型设置已保存");
+    } catch (e) {
+      if (token === epoch) error = readable(e);
+    } finally {
+      if (token === epoch) busy = false;
+    }
+  }
+  async function testConnection() {
+    const token = epoch;
+    connection = "正在检查…";
+    try {
+      const healthy = await createProvider(settingsConfig).healthCheck();
+      if (token !== epoch) return;
+      connection = healthy
+        ? "模型可用"
+        : "没有连接到这个模型，请检查服务和模型名称";
+    } catch (e) {
+      if (token === epoch) connection = readable(e);
+    }
+  }
+  async function prepareModel() {
+    if (modelBusy) return;
+    modelBusy = true;
+    progress = { stage: "正在准备…", completed: 0, total: 0 };
+    error = "";
+    const token = epoch;
+    try {
+      await prepareLocalModel();
+      if (token !== epoch) return;
+      const next = await saveAiConfig({ ...DEFAULT_PROVIDER });
+      if (token !== epoch) return;
+      snapshot = next;
+      config = { ...DEFAULT_PROVIDER };
+      settingsConfig = { ...config };
+      connection = "模型已就绪";
+      flash("本地模型已准备好，可以回首页记第一条了。");
+    } catch (e) {
+      if (token === epoch) error = readable(e);
+    } finally {
+      modelBusy = false;
+    }
+  }
+  async function ask() {
+    if (!query.trim() || busy) return;
+    busy = true;
+    error = "";
+    const token = epoch;
+    try {
+      const parsed = await createProvider(config).parseQuery(query);
+      if (token !== epoch) return;
+      query = parsed.search;
+      queryRegion = parsed.region;
+      queryAnswer = `按${parsed.region ? `地区 ${parsed.region}` : "名称"}检索已确认的记忆`;
+    } catch (e) {
+      if (token === epoch) error = readable(e);
+    } finally {
+      if (token === epoch) busy = false;
+    }
+  }
+  function download(filename: string, payload: string) {
+    const url = URL.createObjectURL(
+      new Blob([payload], { type: "application/json" }),
+    );
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+  async function backup() {
+    try {
+      download("atlas-encrypted-backup.json", await exportBackup());
+    } catch (e) {
+      error = readable(e);
+    }
+  }
+  async function redacted() {
+    try {
+      download("atlas-redacted.json", await exportRedacted(true));
+    } catch (e) {
+      error = readable(e);
+    }
+  }
+  async function file(event: Event, kind: "import" | "restore") {
+    const input = event.currentTarget as HTMLInputElement;
+    const item = input.files?.[0];
+    if (!item) return;
+    error = "";
+    try {
+      if (item.size > 32 * 1024 * 1024) throw new Error("文件超过 32 MiB");
+      const payload = await item.text();
+      if (kind === "restore") {
+        const secret = prompt("输入这份加密备份的主密码");
+        if (!secret) return;
+        snapshot = await importBackup(payload, secret);
+        config = { ...(snapshot.aiConfig ?? DEFAULT_PROVIDER) };
+        settingsConfig = { ...config };
+        flash("加密备份已恢复");
+      } else {
+        const summary = await previewAtlasJson(payload);
+        pendingImport = {
+          text: payload,
+          summary: `${summary.entityCount} 个实体 · ${summary.relationCount} 条关系 · ${summary.eventCount} 个事件`,
+        };
       }
     } catch (e) {
-      if (mode === 'ready') error = readableError(e);
+      error = readable(e);
+    } finally {
+      input.value = "";
     }
   }
-
-  async function createVault() {
-    error = '';
-    if (password.length < 12 || password !== passwordConfirm) { error = password.length < 12 ? '主密码至少 12 个字符' : '两次主密码不一致'; return; }
-    try { snapshot = await initializeVault(password); mode = 'ready'; password = ''; passwordConfirm = ''; notice = 'Vault 已创建'; }
-    catch (e) { error = readableError(e); }
-  }
-  async function unlock() {
-    error = '';
-    try { snapshot = await unlockVault(password); mode = 'ready'; password = ''; selectedId = snapshot.entities[0]?.id ?? ''; notice = 'Vault 已解锁'; }
-    catch (e) { error = readableError(e); }
-  }
-  async function commit(next: VaultSnapshot, unlinkIds: string[] = [], selectedAfter = selectedId): Promise<boolean> {
-    if (saving) return false;
-    const previous = snapshot;
-    const previousSelected = selectedId;
-    snapshot = next;
-    selectedId = selectedAfter;
-    saving = true;
-    try {
-      snapshot = await saveSnapshot(next, unlinkIds);
-      notice = '已保存'; setTimeout(() => notice = '', 1800);
-      saving = false;
-      return true;
-    } catch (e) {
-      saving = false;
-      snapshot = previous;
-      selectedId = previousSelected;
-      error = readableError(e);
-      await syncFromBackend(true);
-      return false;
-    }
-  }
-  async function doLock() {
-    try { await lockVault(); } catch (e) { error = readableError(e); return; }
-    if (isTauri) { mode = 'unlock'; clearLockedState(); } else notice = '预览模式无法锁定';
-  }
-
-  async function addEntity() {
-    if (!addName.trim()) return;
-    const template = TEMPLATES.find((item) => item.id === addTemplate) ?? TEMPLATES[0];
-    const id = newId('entity'); const timestamp = nowIso();
-    const valueKey = template.fields[0]?.key ?? 'purpose';
-    const next: Entity = { id, name: addName.trim(), templateId: template.id, category: template.category, status: 'NEEDS_REVIEW', privacy: 'PRIVATE', tags: addTags.split(',').map((tag) => tag.trim()).filter(Boolean), fields: [{ id: newId('field'), entityId: id, key: valueKey, valueType: template.fields[0]?.valueType ?? 'text', value: addValue, privacy: template.fields[0]?.privacy ?? 'PRIVATE', searchable: true }], createdAt: timestamp, updatedAt: timestamp };
-    if (await commit({ ...snapshot, entities: [next, ...snapshot.entities] }, [], id)) { showAdd = false; addName = ''; addTags = ''; addValue = ''; }
-  }
-
-  async function updateEntity() {
-    if (!selected) return;
-    const next = { ...snapshot, entities: snapshot.entities.map((item) => item.id === selected.id ? { ...item, name: editName.trim() || item.name, status: editStatus, tags: editTags.split(',').map((tag) => tag.trim()).filter(Boolean), updatedAt: nowIso() } : item) };
-    if (await commit(next)) editing = false;
-  }
-
-  async function deleteSelected() {
-    if (!selected) return;
-    const hasRelations = snapshot.relations.some((item) => item.sourceId === selected.id || item.targetId === selected.id);
-    if (hasRelations && !confirm('该实体仍有关系。确认解除关系并删除？')) return;
-    if (!hasRelations && !confirm('确认删除该实体？')) return;
-    const next = { ...snapshot, entities: snapshot.entities.filter((item) => item.id !== selected.id), relations: snapshot.relations.filter((item) => item.sourceId !== selected.id && item.targetId !== selected.id), events: snapshot.events.filter((item) => item.entityId !== selected.id) };
-    await commit(next, hasRelations ? [selected.id] : [], next.entities[0]?.id ?? '');
-  }
-  async function addRelation() {
-    if (!selected || !relationTarget || relationTarget === selected.id) return;
-    if (snapshot.relations.some((item) => item.sourceId === selected.id && item.targetId === relationTarget && item.type === relationType)) { error = '关系已存在'; return; }
-    const relation: Relation = { id: newId('relation'), sourceId: selected.id, type: relationType, targetId: relationTarget, note: relationNote.trim() || undefined, privacy: 'PRIVATE', createdAt: nowIso() };
-    if (await commit({ ...snapshot, relations: [...snapshot.relations, relation] })) { showRelation = false; relationTarget = ''; relationNote = ''; }
-  }
-  async function removeRelation(id: string) { await commit({ ...snapshot, relations: snapshot.relations.filter((item) => item.id !== id) }); }
-  async function addEvent() {
-    if (!selected || !eventDueAt) return;
-    const event: LifecycleEvent = { id: newId('event'), entityId: selected.id, type: eventType as LifecycleEvent['type'], dueAt: new Date(`${eventDueAt}T12:00:00`).toISOString(), policy: eventPolicy as LifecycleEvent['policy'], status: 'UPCOMING', note: eventNote.trim() || undefined };
-    if (await commit({ ...snapshot, events: [...snapshot.events, event] })) { showEvent = false; eventDueAt = ''; eventNote = ''; }
-  }
-
-  function resetFieldForm(field?: Field) {
-    editingFieldId = field?.id ?? '';
-    fieldKey = field?.key ?? '';
-    fieldValueType = field?.valueType ?? 'text';
-    fieldValue = field ? fieldDisplay(field) : '';
-    fieldPrivacy = field?.privacy ?? 'PRIVATE';
-    fieldSearchable = field?.searchable ?? true;
-    fieldSourceProvider = field?.sourceOfTruth?.provider ?? '';
-    fieldSourceReference = field?.sourceOfTruth?.reference ?? '';
-  }
-  function openFieldForm(field?: Field) { resetFieldForm(field); showField = true; }
-  function parseFieldValue(value: string, type: ValueType): unknown {
-    if (type === 'number') { const parsed = Number(value); if (!Number.isFinite(parsed)) throw new Error('数字字段必须是有效数字'); return parsed; }
-    if (type === 'boolean') return value === 'true';
-    if (type === 'json') { try { return JSON.parse(value); } catch { throw new Error('JSON 字段格式无效'); } }
-    return value;
-  }
-  async function saveField() {
-    if (!selected || !fieldKey.trim()) { error = '字段名称不能为空'; return; }
-    let value: unknown;
-    try { value = parseFieldValue(fieldValue, fieldValueType); } catch (e) { error = readableError(e); return; }
-    const sourceOfTruth = fieldSourceProvider.trim() || fieldSourceReference.trim() ? { kind: 'EXTERNAL' as const, provider: fieldSourceProvider.trim() || 'Vaultwarden', reference: fieldSourceReference.trim() || undefined } : undefined;
-    const timestamp = nowIso();
-    const field: Field = { id: editingFieldId || newId('field'), entityId: selected.id, key: fieldKey.trim(), valueType: fieldValueType, value, privacy: fieldPrivacy, searchable: fieldSearchable, sourceOfTruth };
-    const nextEntity = { ...selected, fields: [...selected.fields.filter((item) => item.id !== field.id), field], updatedAt: timestamp };
-    const next = { ...snapshot, entities: snapshot.entities.map((item) => item.id === selected.id ? nextEntity : item) };
-    if (await commit(next)) { showField = false; resetFieldForm(); }
-  }
-  async function removeField(field: Field) {
-    if (!selected || !confirm(`确认删除字段“${field.key}”？`)) return;
-    const next = { ...snapshot, entities: snapshot.entities.map((item) => item.id === selected.id ? { ...item, fields: item.fields.filter((candidate) => candidate.id !== field.id), updatedAt: nowIso() } : item) };
-    await commit(next);
-  }
-  async function openSource(reference?: string) {
-    if (!reference) return;
-    try { await openVaultwarden(reference); } catch (e) { error = readableError(e); }
-  }
-  async function downloadRedacted() {
-    try { const payload = await exportRedactedJson(true); download('atlas-redacted.json', payload, 'application/json'); notice = '已导出脱敏 JSON'; }
-    catch (e) { error = readableError(e); }
-  }
-  async function exportEncryptedBackup() {
-    try { const payload = await exportBackup(); download('atlas-backup.atlas', payload, 'text/plain'); notice = '已导出加密备份'; }
-    catch (e) { error = readableError(e); }
-  }
-  async function importEncryptedBackup(event: Event) { const file = (event.target as HTMLInputElement).files?.[0]; if (!file) return; try { const backupPassword = prompt('请输入该备份的 Vault 主密码'); if (!backupPassword) throw new Error('已取消恢复'); await importBackup(await file.text(), backupPassword); mode = 'unlock'; notice = '备份已恢复，请解锁 Atlas'; } catch (e) { error = readableError(e); } (event.target as HTMLInputElement).value = ''; }
-  async function importJson(event: Event) {
-    const input = event.target as HTMLInputElement;
-    const file = input.files?.[0]; if (!file) return;
-    try { const text = await file.text(); pendingImport = { text, preview: await previewAtlasJson(text) }; }
-    catch (e) { error = readableError(e); }
-    input.value = '';
-  }
-  async function confirmImport() {
+  async function commitImport() {
     if (!pendingImport) return;
+    busy = true;
     try {
-      const before = snapshot.entities.length;
       snapshot = await importAtlasJson(pendingImport.text);
-      selectedId = snapshot.entities[0]?.id ?? '';
-      notice = `已导入 ${Math.max(0, snapshot.entities.length - before)} 个新实体`;
       pendingImport = null;
-    } catch (e) { error = readableError(e); }
+      flash("旧记忆已导入");
+    } catch (e) {
+      error = readable(e);
+    } finally {
+      busy = false;
+    }
   }
-  function download(name: string, content: string, type: string) { const anchor = document.createElement('a'); anchor.href = URL.createObjectURL(new Blob([content], { type })); anchor.download = name; anchor.click(); URL.revokeObjectURL(anchor.href); }
 </script>
 
-{#if mode === 'loading'}
-  <div class="splash"><div class="brand-mark">A</div><strong>Amiya Atlas</strong><span>正在打开本地 Vault…</span></div>
-{:else if mode === 'create' || mode === 'unlock'}
-  <main class="auth-screen">
-    <section class="auth-card">
-      <div class="brand-lockup"><div class="brand-mark">A</div><div><h1>Amiya Atlas</h1><p>本地优先的个人数字基础设施图谱</p></div></div>
-      <div class="auth-copy"><span class="eyebrow">LOCAL VAULT</span><h2>{mode === 'create' ? '建立你的本地 Vault' : '解锁你的 Vault'}</h2><p>{mode === 'create' ? 'Atlas 只保存关系、上下文和生命周期。密码、Token、私钥继续留在 Vaultwarden。' : '数据库和关系拓扑均已加密。错误密码不会打开任何记录。'}</p></div>
-      <form on:submit|preventDefault={mode === 'create' ? createVault : unlock}>
-        <label>主密码<input bind:value={password} type="password" minlength="12" autocomplete={mode === 'create' ? 'new-password' : 'current-password'} placeholder="至少 12 个字符" /></label>
-        {#if mode === 'create'}<label>再次输入<input bind:value={passwordConfirm} type="password" minlength="12" autocomplete="new-password" /></label>{/if}
-        {#if error}<p class="form-error">{error}</p>{/if}
-        <button class="primary wide" type="submit">{mode === 'create' ? '创建并解锁' : '解锁 Atlas'}</button>
-      </form>
-      <div class="auth-foot"><span>Argon2id · XChaCha20-Poly1305 · 无遥测</span>{#if !isTauri}<span>浏览器预览数据为虚构样例</span>{/if}</div>
+{#if mode !== "ready"}
+  <main class="lock-screen">
+    <section class="lock-card">
+      <div class="brand-mark">✦</div>
+      <p class="eyebrow">AMIYA ATLAS</p>
+      <h1>
+        {mode === "loading"
+          ? "正在打开你的 Atlas…"
+          : mode === "create"
+            ? "给记忆一个安全的家。"
+            : "欢迎回来。"}
+      </h1>
+      <p class="muted">你只管说，Atlas 替你记住。</p>
+      {#if mode !== "loading"}<form on:submit|preventDefault={enter}>
+          <label
+            >主密码<input
+              type="password"
+              bind:value={password}
+              autocomplete={mode === "create"
+                ? "new-password"
+                : "current-password"}
+            /></label
+          >{#if mode === "create"}<label
+              >再输入一次<input
+                type="password"
+                bind:value={passwordConfirm}
+                autocomplete="new-password"
+              /></label
+            >
+            <p class="muted">
+              至少 12 个字符。你的记忆保存在本机的加密数据库中。
+            </p>{/if}<button class="primary" disabled={busy}
+            >{busy
+              ? "正在打开…"
+              : mode === "create"
+                ? "创建我的 Atlas"
+                : "解锁"}</button
+          >
+        </form>{/if}{#if error}<div class="error" role="alert">
+          {error}
+        </div>{/if}
     </section>
   </main>
 {:else}
   <div class="app-shell">
-    <header class="topbar">
-      <div class="brand-lockup compact"><div class="brand-mark">A</div><div><strong>Amiya Atlas</strong><span>本地优先的个人数字基础设施图谱</span></div></div>
-      <label class="global-search"><span>⌕</span><input bind:value={query} placeholder="搜索实体、域名、标签… 或输入命令" on:click|stopPropagation /><kbd>Ctrl K</kbd></label>
-      <div class="top-actions"><button class="primary" on:click|stopPropagation={() => { showAdd = true; addMode = 'quick'; }}>＋ 快速添加</button><button class="icon-button" title="导入 JSON" on:click|stopPropagation={() => importInput.click()}>↥</button><button class="icon-button" title="导出脱敏 JSON" on:click|stopPropagation={downloadRedacted}>⇩</button><button class="icon-button" title="锁定" on:click|stopPropagation={doLock}>⌑</button></div>
-    </header>
-    <div class="workspace">
-      <aside class="sidebar">
-        <nav>
-          <button class:active={activeNav === 'all'} on:click={() => nav('all')}><span>▣</span><b>全部</b><em>{snapshot.entities.length}</em></button>
-          <button class:active={activeNav === 'inbox'} on:click={() => nav('inbox')}><span>▱</span><b>收件箱</b><em>{snapshot.entities.filter((item) => item.status === 'NEEDS_REVIEW').length}</em></button>
-          <button class:active={activeNav === 'expiring'} on:click={() => nav('expiring')}><span>◷</span><b>即将过期</b><em>{expiringCount}</em></button>
-        </nav>
-        <div class="nav-section"><span class="nav-title">资产</span>{#each categories as category}<button class:active={activeNav === category} on:click={() => nav(category)}><span>{category === 'Identity' ? '♙' : category === 'Domain' ? '◎' : category === 'Server' ? '▤' : category === 'Project' ? '□' : '◌'}</span><b>{templateLabel(category)}</b><em>{snapshot.entities.filter((item) => item.category === category).length}</em></button>{/each}</div>
-        <div class="nav-bottom"><span class="nav-title">工具</span><button on:click|stopPropagation={exportEncryptedBackup}><span>⇩</span><b>加密备份</b></button><button on:click|stopPropagation={() => backupInput.click()}><span>↥</span><b>恢复备份</b></button><button on:click|stopPropagation={() => { showAdd = true; addMode = 'template'; }}><span>＋</span><b>新建实体</b></button></div>
-      </aside>
-      <section class="entity-pane">
-        <div class="pane-heading"><div><span class="eyebrow">{activeNav === 'all' ? 'INVENTORY' : 'FILTER'}</span><h2>{activeNav === 'all' ? '全部实体' : activeNav === 'expiring' ? '即将过期' : activeNav === 'inbox' ? '待整理' : templateLabel(activeNav)} <small>({visibleEntities.length})</small></h2></div><button class="icon-button muted">≡</button></div>
-        <div class="list-tools"><label class="local-search"><span>⌕</span><input bind:value={query} placeholder="搜索名称、域名、标签…" /></label><button class="filter-button">☷ 筛选</button></div>
-        <div class="list-header"><span>名称</span><span>类型</span><span>状态</span><span>更新</span></div>
-        <div class="entity-list">
-          {#each visibleEntities as entity (entity.id)}
-            <button class:selected={entity.id === selectedId} class="entity-row" on:click={() => selectEntity(entity.id)}><span class="entity-icon">{entity.category === 'Domain' ? '◎' : entity.category === 'Server' ? '▤' : entity.category === 'Identity' ? '♙' : entity.category === 'Project' ? '□' : '◌'}</span><span class="entity-name"><strong>{entity.name}</strong><small>{entity.category}</small></span><span class="status-chip" class:review={entity.status === 'NEEDS_REVIEW'} class:planned={entity.status === 'PLANNED'}>{entity.status === 'ACTIVE' ? '正常' : entity.status === 'NEEDS_REVIEW' ? '待整理' : entity.status === 'PLANNED' ? '计划中' : entity.status}</span><time>{formatDate(entity.updatedAt)}</time></button>
-          {:else}<div class="empty-list"><span>⌁</span><p>没有匹配实体</p><button class="secondary" on:click={() => { query = ''; activeNav = 'all'; }}>清除筛选</button></div>{/each}
+    <aside class="sidebar">
+      <a
+        class="brand"
+        href="#home"
+        on:click|preventDefault={() => navigate("Home")}
+        ><span class="brand-mark">✦</span><span
+          >Atlas<small>by Amiya</small></span
+        ></a
+      >
+      <p class="sidebar-label">你的数字世界</p>
+      <nav aria-label="主导航">
+        {#each pages as item}<button
+            class:active={page === item}
+            on:click={() => navigate(item)}
+            ><span class="nav-symbol">{symbols[item]}</span><span
+              >{labels[item]}<small>{item}</small></span
+            >{#if item === "Inbox" && pending.length}<span class="count"
+                >{pending.length}</span
+              >{/if}</button
+          >{/each}
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="local-label">
+          <span></span>{config.kind === "openai-compatible"
+            ? "使用你选择的远程模型"
+            : "本地模型 · 本机保存"}
         </div>
-      </section>
-      <section class="detail-pane">
-        {#if selected}
-          <div class="detail-head"><div class="detail-title"><div class="large-icon">{selected.category === 'Domain' ? '◎' : selected.category === 'Server' ? '▤' : selected.category === 'Identity' ? '♙' : selected.category === 'Project' ? '□' : '◌'}</div><div><h1>{selected.name}</h1><div class="title-meta"><span>{selected.category}</span><span class="status-chip" class:review={selected.status === 'NEEDS_REVIEW'}>{selected.status === 'ACTIVE' ? '正常' : selected.status}</span><span class="privacy-mark">PRIVATE</span></div></div></div><div class="detail-actions">{#if editing}<button class="primary" on:click={updateEntity}>保存</button><button class="secondary" on:click={() => editing = false}>取消</button>{:else}<button class="secondary" on:click={() => editing = true}>✎ 编辑</button>{/if}<button class="icon-button" on:click={deleteSelected}>⋯</button></div></div>
-          <div class="tabs"><button class="active">概览</button><button>关系 <span>({inbound.length + outbound.length})</span></button><button>事件 <span>({snapshot.events.filter((event) => event.entityId === selected.id).length})</span></button><button>凭据 <span>({selected.fields.some((field) => field.sourceOfTruth?.provider === 'Vaultwarden') ? 1 : 0})</span></button></div>
-          <div class="detail-scroll">
-            <section class="detail-card basic-card"><div class="card-heading"><h3>基本信息</h3>{#if !editing}<span class="updated">更新于 {formatDate(selected.updatedAt)}</span>{/if}</div>{#if editing}<div class="edit-grid"><label>名称<input bind:value={editName} /></label><label>状态<select bind:value={editStatus}><option>ACTIVE</option><option>NEEDS_REVIEW</option><option>PLANNED</option><option>ARCHIVED</option></select></label><label class="full">标签<input bind:value={editTags} placeholder="用逗号分隔" /></label></div>{:else}<div class="field-grid"><div><span>名称</span><strong>{selected.name}</strong></div><div><span>创建时间</span><strong>{formatDate(selected.createdAt)}</strong></div><div><span>类型</span><strong>{selected.category}</strong></div><div><span>更新日期</span><strong>{formatDate(selected.updatedAt)}</strong></div><div><span>状态</span><strong>{selected.status}</strong></div><div><span>数据范围</span><strong>本地加密</strong></div></div><div class="tag-list">{#each selected.tags as tag}<span>{tag}</span>{/each}<button on:click={() => editing = true}>＋</button></div>{/if}<div class="field-list"><div class="card-heading field-heading"><h3>字段</h3><button class="secondary small" on:click={() => openFieldForm()}>＋ 添加字段</button></div>{#each selected.fields as field}<div class="field-line"><span>{field.key}</span><strong>{field.privacy === 'SECRET' ? '••••••••' : fieldDisplay(field)}</strong>{#if field.sourceOfTruth}<small>{field.sourceOfTruth.provider ?? '外部来源'} 引用</small>{/if}<span class="field-actions"><button title="编辑字段" on:click={() => openFieldForm(field)}>✎</button><button title="删除字段" on:click={() => removeField(field)}>×</button></span></div>{:else}<p class="muted-copy">暂无字段。把公开上下文或 Vaultwarden 引用加到这里。</p>{/each}</div></section>
-            <section class="detail-card relations-card"><div class="card-heading"><h3>关系</h3><button class="secondary small" on:click={() => showRelation = true}>＋ 添加关系</button></div><div class="relation-columns"><div><h4>传入关系 <span>({inbound.length})</span></h4>{#each inbound as relation}<div class="relation-row"><span class="relation-icon">{entityCategory(relation.sourceId) === 'Domain' ? '◎' : '◌'}</span><div><strong>{entityName(relation.sourceId)}</strong><small>{entityCategory(relation.sourceId)}</small></div><code>{relation.type}</code><button on:click={() => removeRelation(relation.id)}>×</button></div>{:else}<p class="muted-copy">暂无传入关系</p>{/each}</div><div><h4>传出关系 <span>({outbound.length})</span></h4>{#each outbound as relation}<div class="relation-row"><span class="relation-icon">{entityCategory(relation.targetId) === 'Server' ? '▤' : '◌'}</span><div><strong>{entityName(relation.targetId)}</strong><small>{entityCategory(relation.targetId)}</small></div><code>{relation.type}</code><button on:click={() => removeRelation(relation.id)}>×</button></div>{:else}<p class="muted-copy">暂无传出关系</p>{/each}</div></div></section>
-            <section class="detail-card events-card"><div class="card-heading"><h3>生命周期事件</h3><button class="secondary small" on:click={() => showEvent = true}>＋ 添加事件</button></div>{#each snapshot.events.filter((event) => event.entityId === selected.id) as event}<div class="event-row"><span class="event-dot"></span><div><strong>{event.type === 'RENEWAL' ? '续费提醒' : event.type === 'EXPIRY' ? '到期提醒' : '复核提醒'}</strong><small>{formatDate(event.dueAt)} · {daysUntil(event.dueAt)}</small></div><span class="event-policy">{event.policy ?? 'REVIEW'}</span></div>{:else}<p class="muted-copy">没有安排事件。把续费、到期和复核日期放在这里。</p>{/each}</section>
-            <section class="detail-card source-card"><div class="card-heading"><h3>权威来源</h3></div><div class="source-row"><span class="vault-icon">⌑</span><div><strong>密码和 Token 不进入 Atlas</strong><small>{#if selected.fields.some((field) => field.sourceOfTruth?.reference)}已保存外部引用；需要凭据时只打开对应 Vaultwarden 条目。{:else}编辑字段可以保存 Vaultwarden 条目 URL 引用。{/if}</small></div>{#if selected.fields.some((field) => field.sourceOfTruth?.reference)}<button class="secondary small" on:click={() => openSource(selected.fields.find((field) => field.sourceOfTruth?.reference)?.sourceOfTruth?.reference)}>打开引用 ↗</button>{/if}</div></section>
+        <button class="text-button" on:click={lock}>锁定记忆库 ↗</button>
+      </div>
+    </aside>
+    <main class="main-area">
+      <header class="topbar">
+        <span>我的 Atlas <span class="slash">/</span> {labels[page]}</span><span
+          class="pill"
+          >{isTauri
+            ? "PRIVATE BY DEFAULT"
+            : "临时浏览器预览 · 刷新后重置"}</span
+        >
+      </header>
+      <div class="page-content">
+        {#if error}<div class="error" role="alert">
+            {error}
+          </div>{/if}{#if notice}<div class="notice" role="status">
+            {notice}<button aria-label="关闭提示" on:click={() => (notice = "")}
+              >×</button
+            >
+          </div>{/if}
+        {#if page === "Home"}
+          <section class="home-intro">
+            <p class="eyebrow">LESS TO REMEMBER. MORE TO CREATE.</p>
+            <h1>今天要告诉 Atlas 什么？</h1>
+            <p>账号、项目、一次决定。说出来，让它们有迹可循。</p>
+          </section>
+          <form class="capture-card" on:submit|preventDefault={capture}>
+            <label class="sr-only" for="capture">告诉 Atlas 一件事</label
+            ><textarea
+              id="capture"
+              bind:this={captureInput}
+              bind:value={text}
+              maxlength="10000"
+              placeholder="比如：Saily 是我的美国备用号码，每个月六块多，暂时保留。"
+              rows="4"
+              disabled={busy}></textarea>
+            <div class="capture-footer">
+              <span
+                ><span class="tiny-spark">✦</span> 自动整理，等你确认
+                <kbd>Ctrl K</kbd></span
+              ><button
+                class="primary"
+                disabled={busy || !text.trim()}
+                type="submit"
+                >{busy ? "正在理解…" : "帮我记住"} <span>↗</span></button
+              >
+            </div>
+          </form>
+          <div class="example-row">
+            <span>试着告诉它</span
+            >{#each ["一个号码", "一项订阅", "一次注册"] as label, i}<button
+                class="example-chip"
+                disabled={busy}
+                on:click={() => {
+                  text = samples[i];
+                  captureInput?.focus();
+                }}>{label} ＋</button
+              >{/each}
           </div>
-        {:else}<div class="detail-empty"><span>＋</span><h2>从左侧选择一个实体</h2><p>或者按 Ctrl K 快速添加第一条记录。</p></div>{/if}
-      </section>
-    </div>
-    {#if notice}<div class="toast success">{notice}</div>{/if}{#if error}<div class="toast error">{error}</div>{/if}
+          <section class="recent-section">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">YOUR MEMORY, AT A GLANCE</p>
+                <h2>最近记住</h2>
+              </div>
+              <button class="text-button" on:click={() => navigate("Memory")}
+                >全部记忆 ↗</button
+              >
+            </div>
+            {#if recent.length}<div class="memory-grid">
+                {#each recent.slice(0, 3) as entity}<button
+                    class="memory-card"
+                    on:click={() => openEntity(entity.id)}
+                    ><div class="memory-card-top">
+                      <span class="entity-icon"
+                        >{entity.name.slice(0, 1).toUpperCase()}</span
+                      ><span class="muted">↗</span>
+                    </div>
+                    <strong>{entity.name}</strong><span>{entity.category}</span>
+                    <div class="memory-card-meta">
+                      {entity.fields.find(
+                        (f) =>
+                          ["region", "country", "provider"].includes(f.key) &&
+                          f.privacy !== "SECRET",
+                      )?.value ?? "已确认的记忆"}
+                    </div></button
+                  >{/each}
+              </div>{:else}<div class="empty-state">
+                从第一句话开始。记忆会慢慢连成你的数字世界。
+              </div>{/if}
+          </section>
+          <div class="home-bottom">
+            <section class="panel">
+              <div class="section-heading">
+                <h2>待确认 <span class="count">{pending.length}</span></h2>
+                <button class="text-button" on:click={() => navigate("Inbox")}
+                  >查看 ↗</button
+                >
+              </div>
+              {#if pending.length}<p class="muted">
+                  {pending[0].rawText.slice(0, 100)}
+                </p>{:else}<p class="muted">
+                  都整理好了。没有待确认的内容。
+                </p>{/if}
+            </section>
+            <section class="panel">
+              <div class="section-heading">
+                <h2>即将处理</h2>
+                <span class="muted">LIFECYCLE</span>
+              </div>
+              {#if upcoming.length}{#each upcoming.slice(0, 2) as event}<button
+                    class="event-row"
+                    on:click={() => openEntity(event.entityId)}
+                    ><span>{name(event.entityId)}</span><span
+                      >{date(event.dueAt)} · {event.policy === "DO_NOT_RENEW"
+                        ? "不续费"
+                        : event.type === "EXPIRY"
+                          ? "到期"
+                          : "待处理"}</span
+                    ></button
+                  >{/each}{:else}<p class="muted">
+                  有时间安排时，Atlas 会记在这里。
+                </p>{/if}
+            </section>
+          </div>
+        {:else if page === "Inbox"}
+          {#if preview && previewCapture}<ProposalPreview
+              record={preview}
+              capture={previewCapture}
+              entities={snapshot.entities}
+              {busy}
+              onConfirm={confirm}
+              onLater={later}
+            />{:else}<div class="page-heading">
+              <p class="eyebrow">YOUR WORDS, WAITING TO BECOME MEMORY</p>
+              <h1>待确认</h1>
+              <p>原话已经保留。看看 Atlas 理解得对不对。</p>
+            </div>
+            {#if pending.length}<div class="inbox-list">
+                {#each pending as input}{@const proposal =
+                    snapshot.proposals?.find(
+                      (p) => p.captureId === input.id && p.status === "PENDING",
+                    )}
+                  <article class="panel inbox-item">
+                    <div class="section-heading">
+                      <span class="pill"
+                        >{proposal ? "提案已准备好" : "等待解析"}</span
+                      ><span class="muted">{date(input.timestamp)}</span>
+                    </div>
+                    <p>{input.rawText}</p>
+                    <div class="button-row">
+                      <button
+                        class="text-button danger"
+                        disabled={busy}
+                        on:click={() => dismiss(input.id)}>暂不整理</button
+                      ><button
+                        class="secondary"
+                        disabled={busy}
+                        on:click={() => parseCapture(input)}
+                        >{parsingId === input.id
+                          ? "正在理解…"
+                          : proposal
+                            ? "重新解析"
+                            : "重新尝试"}</button
+                      >{#if proposal}<button
+                          class="primary"
+                          disabled={busy}
+                          on:click={() => (previewId = proposal.id)}
+                          >检查并确认</button
+                        >{/if}
+                    </div>
+                  </article>{/each}
+              </div>{:else}<div class="empty-state">
+                <span class="empty-spark">✦</span>
+                <h2>没有待确认的内容</h2>
+                <p>回首页说一件想记住的事。</p>
+                <button class="primary" on:click={() => navigate("Home")}
+                  >记第一句话</button
+                >
+              </div>{/if}{/if}
+        {:else if page === "Search" || page === "Memory"}
+          {#if selected}<div class="detail-header">
+              <button class="text-button" on:click={() => (selectedId = "")}
+                >← 全部记忆</button
+              ><button class="primary" on:click={() => explore(selected.id)}
+                >探索关联 ◇</button
+              >
+            </div>
+            <article class="detail-card">
+              <span class="pill">{selected.category}</span>
+              <h1>{selected.name}</h1>
+              <p class="muted">
+                {selected.status} · 最近更新 {date(selected.updatedAt)}
+              </p>
+              <dl class="detail-fields">
+                {#each selected.fields.filter((f) => f.privacy !== "SECRET") as field}<div
+                  >
+                    <dt>{attributeLabel(field.key)}</dt>
+                    <dd>{display(field.value)}</dd>
+                  </div>{/each}
+              </dl>
+              {#if !selected.fields.length}<p class="muted">
+                  这条记忆还没有更多属性。
+                </p>{/if}
+              <h2>关联</h2>
+              {#if selectedRelations.length}{#each selectedRelations as relation}<button
+                    class="relation-row"
+                    on:click={() =>
+                      openEntity(
+                        relation.sourceId === selected.id
+                          ? relation.targetId
+                          : relation.sourceId,
+                      )}
+                    ><span
+                      >{relation.sourceId === selected.id ? "→" : "←"}
+                      {relation.type}</span
+                    ><strong
+                      >{name(
+                        relation.sourceId === selected.id
+                          ? relation.targetId
+                          : relation.sourceId,
+                      )}</strong
+                    ></button
+                  >{/each}{:else}<p class="muted">
+                  还没有已确认的关联。
+                </p>{/if}{#if snapshot.events.some((e) => e.entityId === selected.id)}<h2
+                >
+                  生命周期
+                </h2>
+                {#each snapshot.events.filter((e) => e.entityId === selected.id) as event}<div
+                    class="event-detail"
+                  >
+                    <strong>{date(event.dueAt)} · {event.type}</strong><span
+                      >{event.policy === "DO_NOT_RENEW"
+                        ? "不续费"
+                        : event.policy}</span
+                    >
+                    <p class="muted">{event.note ?? ""}</p>
+                  </div>{/each}{/if}{#if sources.length}<h2>当时你说的是</h2>
+                {#each sources as source}<blockquote class="original">
+                    {source.rawText}
+                    <footer>{date(source.timestamp)}</footer>
+                  </blockquote>{/each}{/if}
+            </article>{:else}<div class="page-heading">
+              <p class="eyebrow">
+                {page === "Search"
+                  ? "FIND WHAT YOUR MIND LEFT BEHIND"
+                  : "A WORLD YOU CAN COME BACK TO"}
+              </p>
+              <h1>{page === "Search" ? "想找什么？" : "你的记忆"}</h1>
+              <p>
+                {page === "Search"
+                  ? "搜索名称、地区或备注，也可以让 Atlas 理解你的问题。"
+                  : "每一条都来自你确认过的信息。"}
+              </p>
+            </div>
+            <form class="search-box" on:submit|preventDefault={ask}>
+              <span>⌕</span><input
+                bind:value={query}
+                placeholder={page === "Search"
+                  ? "美国，或者「我有哪些日本的东西？」"
+                  : "搜索名称、地区、备注…"}
+                aria-label="搜索记忆"
+                on:input={() => {
+                  queryAnswer = "";
+                  queryRegion = "";
+                }}
+              />{#if page === "Search"}<button
+                  class="secondary"
+                  disabled={busy || !query.trim()}
+                  type="submit">{busy ? "正在理解…" : "理解问题"}</button
+                >{/if}
+            </form>
+            {#if queryAnswer}<p class="muted">
+                {queryAnswer}。结果来自数据库。
+              </p>{/if}
+            <div class="list-heading">
+              <span>{results.length} 条记忆</span><span>仅显示已确认的内容</span
+              >
+            </div>
+            {#if results.length}<div class="entity-list">
+                {#each results as entity}<button
+                    class="entity-list-item"
+                    on:click={() => openEntity(entity.id)}
+                    ><span class="entity-icon"
+                      >{entity.name.slice(0, 1).toUpperCase()}</span
+                    >
+                    <div>
+                      <strong>{entity.name}</strong><small
+                        >{entity.category} · {entity.status}</small
+                      >
+                    </div>
+                    <span>↗</span></button
+                  >{/each}
+              </div>{:else}<div class="empty-state">
+                没有找到相关记忆。试试名称、地区或备注中的关键词。
+              </div>{/if}{/if}
+        {:else if page === "Explore"}
+          <div class="page-heading">
+            <p class="eyebrow">FOLLOW THE CONNECTIONS</p>
+            <h1>探索你的数字世界</h1>
+            <p>从一个记忆开始，按需展开它的关联。</p>
+          </div>
+          <label class="root-picker"
+            >从这里开始<select bind:value={rootId}
+              ><option value="">选择一个记忆</option
+              >{#each snapshot.entities.filter((e) => e.privacy !== "SECRET") as entity}<option
+                  value={entity.id}>{entity.name}</option
+                >{/each}</select
+            ></label
+          >{#if rootId}<ExploreCanvas
+              {snapshot}
+              {rootId}
+              onOpen={openEntity}
+            />{:else}<div class="empty-state">
+              先选择一个记忆，画布只会显示与它相关的节点。
+            </div>{/if}
+        {:else if page === "Settings"}
+          <div class="page-heading">
+            <p class="eyebrow">MAKE ATLAS FEEL LIKE YOURS</p>
+            <h1>设置</h1>
+            <p>默认留在本机。也可以连接你选择的模型。</p>
+          </div>
+          <section class="panel settings-panel">
+            <h2>理解你的模型</h2>
+            <div class="provider-options">
+              {#each [["local", "Atlas Local", "默认 · 本机私密"], ["ollama", "Ollama", "使用已有本地服务"], ["openai-compatible", "OpenAI Compatible", "自定义 URL / Key / Model"]] as [kind, title, subtitle]}<button
+                  class:chosen={settingsConfig.kind === kind}
+                  on:click={() => configure(kind as ProviderConfig["kind"])}
+                  ><strong>{title}</strong><small>{subtitle}</small></button
+                >{/each}
+            </div>
+            {#if settingsConfig.kind === "local"}<div class="local-model">
+                <span class="model-monogram">Q</span>
+                <div>
+                  <h3>Qwen3.5 2B · Lite</h3>
+                  <p>
+                    模型约 1.9 GB。首次使用另需下载运行时约 1.5
+                    GB，解压后需要更多空间。
+                  </p>
+                  <p class="muted">
+                    自动配置，关闭思考模式。输入在本机解析，下载完成后可离线使用。
+                  </p>
+                </div>
+              </div>
+              <div class="button-row">
+                <button
+                  class="primary"
+                  disabled={modelBusy || !isTauri}
+                  on:click={prepareModel}
+                  >{modelBusy
+                    ? "正在准备本地模型…"
+                    : "下载并准备默认模型"}</button
+                ><button class="secondary" on:click={testConnection}
+                  >检查模型</button
+                >
+              </div>
+              {#if modelBusy}<p class="muted" role="status">
+                  {progress.stage}{progress.total
+                    ? ` · ${Math.round((progress.completed / progress.total) * 100)}%`
+                    : ""}
+                </p>
+                {#if progress.total}<progress
+                    value={progress.completed}
+                    max={progress.total}
+                  ></progress>{/if}{/if}{#if !isTauri}<p class="muted">
+                  一键准备在 Windows x64 桌面版中使用。浏览器预览可连接已有
+                  Ollama 服务。
+                </p>{/if}{:else}<div class="provider-form">
+                <label
+                  >Base URL<input
+                    bind:value={settingsConfig.baseUrl}
+                    placeholder={settingsConfig.kind === "ollama"
+                      ? "http://localhost:11434"
+                      : "https://your-provider.example/v1"}
+                  /></label
+                ><label
+                  >Model<input
+                    bind:value={settingsConfig.model}
+                    placeholder="模型名称"
+                  /></label
+                >{#if settingsConfig.kind === "openai-compatible"}<label
+                    >API Key<input
+                      type="password"
+                      bind:value={settingsConfig.apiKey}
+                      autocomplete="off"
+                    /></label
+                  ><label
+                    >兼容格式<select bind:value={settingsConfig.responseFormat}
+                      ><option value="json_object">JSON Object（通用）</option
+                      ><option value="json_schema">JSON Schema</option><option
+                        value="prompt">仅提示词约束</option
+                      ></select
+                    ></label
+                  >
+                  <p class="muted">
+                    选择远程模型后，输入原文及最多 12
+                    个相关实体的名称、类型会发送到这个地址。API Key
+                    在桌面版的加密数据库中保存。
+                  </p>{/if}
+              </div>
+              <button class="secondary" on:click={testConnection}
+                >检查连接</button
+              >{/if}{#if connection}<p class="connection-status" role="status">
+                {connection}
+              </p>{/if}
+            <div class="settings-footer">
+              <button
+                class="primary"
+                disabled={busy || modelBusy}
+                on:click={saveSettings}>保存模型设置</button
+              >
+            </div>
+          </section>
+          <section class="panel settings-panel">
+            <h2>记忆与备份</h2>
+            <p class="muted">
+              桌面版使用原有加密 SQLite。旧实体和关系仍能打开。
+            </p>
+            <div class="button-row">
+              <button class="secondary" on:click={backup} disabled={!isTauri}
+                >导出加密备份</button
+              ><label class="file-button secondary"
+                >恢复加密备份<input
+                  type="file"
+                  accept=".json"
+                  on:change={(e) => file(e, "restore")}
+                  disabled={!isTauri}
+                /></label
+              ><button class="secondary" on:click={redacted}
+                >导出脱敏清单</button
+              ><label class="file-button secondary"
+                >导入旧 Atlas JSON<input
+                  type="file"
+                  accept=".json"
+                  on:change={(e) => file(e, "import")}
+                /></label
+              >
+            </div>
+            {#if pendingImport}<div class="import-preview">
+                <p>{pendingImport.summary}</p>
+                <p class="muted">确认后合并到已有记忆。</p>
+                <div class="button-row">
+                  <button
+                    class="secondary"
+                    on:click={() => (pendingImport = null)}>取消</button
+                  ><button
+                    class="primary"
+                    disabled={busy}
+                    on:click={commitImport}>确认导入</button
+                  >
+                </div>
+              </div>{/if}
+          </section>
+        {/if}
+        <footer class="page-footer">
+          <span>Tell Atlas. It remembers.</span><span
+            >你确认的，才是记忆。 ✦</span
+          >
+        </footer>
+      </div>
+    </main>
   </div>
 {/if}
-
-{#if showAdd}<div class="modal-backdrop" role="presentation" on:click={() => showAdd = false}><section class="modal" role="dialog" aria-modal="true" tabindex="-1" on:click|stopPropagation on:keydown|stopPropagation><div class="modal-head"><div><span class="eyebrow">QUICK ADD</span><h2>{addMode === 'quick' ? '捕获一条新资产' : '新建实体'}</h2></div><button class="icon-button" on:click={() => showAdd = false}>×</button></div><form on:submit|preventDefault={addEntity}><label>名称<input bind:value={addName} placeholder="例如：Cloudflare Main" /></label><div class="form-grid"><label>模板<select bind:value={addTemplate}>{#each TEMPLATES as template}<option value={template.id}>{template.label}</option>{/each}</select></label><label>标签<input bind:value={addTags} placeholder="core, review" /></label></div><label>{TEMPLATES.find((item) => item.id === addTemplate)?.fields[0]?.key ?? '备注'}<input bind:value={addValue} placeholder="可稍后补充" /></label><p class="helper">名称是唯一必填项。保存后可在详情中继续补全字段、关系和生命周期。</p><div class="modal-actions"><button class="secondary" type="button" on:click={() => showAdd = false}>取消</button><button class="primary" type="submit">保存到收件箱</button></div></form></section></div>{/if}
-{#if showRelation && selected}<div class="modal-backdrop" role="presentation" on:click={() => showRelation = false}><section class="modal" role="dialog" aria-modal="true" tabindex="-1" on:click|stopPropagation on:keydown|stopPropagation><div class="modal-head"><div><span class="eyebrow">RELATION</span><h2>添加关系</h2></div><button class="icon-button" on:click={() => showRelation = false}>×</button></div><form on:submit|preventDefault={addRelation}><label>关系类型<select bind:value={relationType}>{#each RELATION_TYPES as type}<option>{type}</option>{/each}</select></label><label>目标实体<select bind:value={relationTarget}><option value="">选择实体</option>{#each snapshot.entities.filter((item) => item.id !== selected.id) as entity}<option value={entity.id}>{entity.name} · {entity.category}</option>{/each}</select></label><label>备注<input bind:value={relationNote} placeholder="可选" /></label><div class="modal-actions"><button class="secondary" type="button" on:click={() => showRelation = false}>取消</button><button class="primary" type="submit">建立关系</button></div></form></section></div>{/if}
-{#if showEvent && selected}<div class="modal-backdrop" role="presentation" on:click={() => showEvent = false}><section class="modal" role="dialog" aria-modal="true" tabindex="-1" on:click|stopPropagation on:keydown|stopPropagation><div class="modal-head"><div><span class="eyebrow">LIFECYCLE</span><h2>添加生命周期事件</h2></div><button class="icon-button" on:click={() => showEvent = false}>×</button></div><form on:submit|preventDefault={addEvent}><div class="form-grid"><label>类型<select bind:value={eventType}><option value="REVIEW">复核</option><option value="RENEWAL">续费</option><option value="EXPIRY">到期</option><option value="PAYMENT_DUE">付款</option></select></label><label>日期<input bind:value={eventDueAt} type="date" required /></label></div><label>策略<select bind:value={eventPolicy}><option value="REVIEW">需要复核</option><option value="MANUAL">手动续费</option><option value="DO_NOT_RENEW">不续费</option><option value="AUTO_RENEW">自动续费</option></select></label><label>备注<input bind:value={eventNote} placeholder="可选" /></label><div class="modal-actions"><button class="secondary" type="button" on:click={() => showEvent = false}>取消</button><button class="primary" type="submit">加入时间线</button></div></form></section></div>{/if}
-{#if showField && selected}<div class="modal-backdrop" role="presentation" on:click={() => showField = false}><section class="modal" role="dialog" aria-modal="true" tabindex="-1" on:click|stopPropagation on:keydown|stopPropagation><div class="modal-head"><div><span class="eyebrow">FIELD</span><h2>{editingFieldId ? '编辑字段' : '添加字段'}</h2></div><button class="icon-button" on:click={() => showField = false}>×</button></div><form on:submit|preventDefault={saveField}><div class="form-grid"><label>字段名<input bind:value={fieldKey} placeholder="例如：provider" required /></label><label>值类型<select bind:value={fieldValueType}><option value="text">文本</option><option value="url">URL</option><option value="date">日期</option><option value="number">数字</option><option value="boolean">布尔</option><option value="json">JSON</option></select></label></div>{#if fieldValueType === 'boolean'}<label>值<select bind:value={fieldValue}><option value="false">否</option><option value="true">是</option></select></label>{:else if fieldValueType === 'json'}<label>值<textarea bind:value={fieldValue} rows="4" placeholder="有效 JSON"></textarea></label>{:else}<label>值<input bind:value={fieldValue} type={fieldValueType === 'date' ? 'date' : 'text'} /></label>{/if}<div class="form-grid"><label>隐私级别<select bind:value={fieldPrivacy}><option value="PUBLIC">PUBLIC · 可公开</option><option value="PRIVATE">PRIVATE · 本地私有</option><option value="SECRET">SECRET · 不导出</option></select></label><label class="check-label"><input bind:checked={fieldSearchable} type="checkbox" />允许搜索</label></div><div class="form-grid"><label>来源提供方<input bind:value={fieldSourceProvider} placeholder="Vaultwarden" /></label><label>来源引用 URL<input bind:value={fieldSourceReference} placeholder="https://vaultwarden.example/item/..." /></label></div><p class="helper">密码、Token、SSH 私钥和 CVV 不允许写入字段；这里只保存外部来源引用。</p><div class="modal-actions"><button class="secondary" type="button" on:click={() => showField = false}>取消</button><button class="primary" type="submit">保存字段</button></div></form></section></div>{/if}
-{#if pendingImport}<div class="modal-backdrop" role="presentation" on:click={() => pendingImport = null}><section class="modal" role="dialog" aria-modal="true" tabindex="-1" on:click|stopPropagation on:keydown|stopPropagation><div class="modal-head"><div><span class="eyebrow">IMPORT REVIEW</span><h2>确认导入 Atlas JSON</h2></div><button class="icon-button" on:click={() => pendingImport = null}>×</button></div><p class="helper">文件已通过格式和字段校验。重复项会复用现有记录，冲突内容将在写入时拒绝。</p><div class="import-summary"><div><strong>{pendingImport.preview.entityCount}</strong><span>实体</span></div><div><strong>{pendingImport.preview.relationCount}</strong><span>关系</span></div><div><strong>{pendingImport.preview.eventCount}</strong><span>事件</span></div></div><p class="helper">可复用：实体 {pendingImport.preview.duplicateEntityCount}、关系 {pendingImport.preview.duplicateRelationCount}、事件 {pendingImport.preview.duplicateEventCount}。</p><div class="modal-actions"><button class="secondary" type="button" on:click={() => pendingImport = null}>取消</button><button class="primary" type="button" on:click={confirmImport}>确认导入</button></div></section></div>{/if}
-<input class="hidden-input" bind:this={importInput} type="file" accept="application/json,.json" on:change={importJson} /><input class="hidden-input" bind:this={backupInput} type="file" accept=".atlas,text/plain" on:change={importEncryptedBackup} />

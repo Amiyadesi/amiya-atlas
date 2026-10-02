@@ -9,17 +9,25 @@
     "build:host": "cargo build --manifest-path native-host/Cargo.toml --release && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/copy-native-host.ps1",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "tauri": "tauri",
-    "build:desktop": "npm run build:host && tauri build"
+    "build:desktop": "npm run build:host && tauri build",
+    "test": "vitest run",
+    "test:ui": "playwright test",
+    "test:core": "cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --lib"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",
-    "svelte": "^5.38.7"
+    "svelte": "^5.38.7",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@playwright/test": "^1.56.1",
     "@sveltejs/vite-plugin-svelte": "^6.2.1",
     "@tauri-apps/cli": "^2.12.1",
+    "prettier": "^3.9.9",
+    "prettier-plugin-svelte": "^4.1.1",
     "svelte-check": "^4.3.1",
     "typescript": "^5.9.2",
-    "vite": "^7.1.7"
+    "vite": "^7.1.7",
+    "vitest": "^4.1.11"
   }
 }

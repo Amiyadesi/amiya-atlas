@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use uuid::Uuid;
 
 pub type Result<T> = std::result::Result<T, String>;
-pub const RELATIONS: &[&str] = &["REGISTERED_WITH", "AUTHENTICATES_WITH", "RECOVERS_WITH", "OWNS_ADDRESS", "MANAGES", "USES", "DEPENDS_ON", "HOSTS", "HOSTED_ON", "CONNECTED_VIA", "EXPOSED_AT", "SOURCE_IN", "DEPLOYED_ON", "PAID_BY", "BILLED_FOR", "ISSUED_BY", "STORED_IN", "RELATED_TO"];
+pub const RELATIONS: &[&str] = &["REGISTERED_WITH", "AUTHENTICATES_WITH", "RECOVERS_WITH", "OWNS_ADDRESS", "MANAGES", "USES", "DEPENDS_ON", "HOSTS", "HOSTED_ON", "CONNECTED_VIA", "EXPOSED_AT", "SOURCE_IN", "DEPLOYED_ON", "PAID_BY", "BILLED_FOR", "ISSUED_BY", "STORED_IN", "RELATED_TO", "OWNS", "MANAGED_BY"];
 
 fn private() -> String { "PRIVATE".into() }
 fn active() -> String { "ACTIVE".into() }
@@ -81,6 +81,8 @@ pub struct Event {
     #[serde(rename = "type")]
     pub kind: String,
     pub due_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due_precision: Option<String>,
     pub recurrence: Option<String>,
     pub policy: Option<String>,
     pub status: String,
@@ -95,6 +97,12 @@ pub struct Snapshot {
     pub entities: Vec<Entity>,
     pub relations: Vec<Relation>,
     pub events: Vec<Event>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub captures: Vec<crate::capture::Capture>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub proposals: Vec<crate::capture::ProposalRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai_config: Option<crate::ai::AiConfig>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -164,14 +172,16 @@ impl Snapshot {
         for ev in &self.events {
             unique_id(&mut ids, &ev.id)?;
             if !entities.contains(ev.entity_id.as_str()) { return Err("事件引用了不存在的实体".into()); }
-            if !["EXPIRY", "RENEWAL", "REVIEW", "PAYMENT_DUE", "CUSTOM"].contains(&ev.kind.as_str()) { return Err("未知事件类型".into()); }
+            if !["EXPIRY", "RENEWAL", "REVIEW", "PAYMENT_DUE", "CUSTOM", "CANCELLATION", "REMINDER"].contains(&ev.kind.as_str()) { return Err("未知事件类型".into()); }
             if !["UPCOMING", "DONE", "DISMISSED", "UNKNOWN"].contains(&ev.status.as_str()) { return Err("未知事件状态".into()); }
             if ev.status == "UPCOMING" && ev.due_at.is_none() { return Err("即将到期事件需要明确日期；未知日期请标记 UNKNOWN".into()); }
-            if let Some(d) = &ev.due_at { date(d)?; }
+            if let Some(d) = &ev.due_at { if let Some(p) = &ev.due_precision { crate::capture::event_date(d, p)?; } else { date(d)?; } }
             if let Some(p) = &ev.policy { if !["AUTO_RENEW", "MANUAL", "DO_NOT_RENEW", "REVIEW"].contains(&p.as_str()) { return Err("未知续费策略".into()); } }
             if let Some(r) = &ev.recurrence { if !["monthly", "yearly"].contains(&r.as_str()) { return Err("首版仅支持 monthly/yearly 重复标记".into()); } }
             if let Some(note) = &ev.note { check_text(note, 5000, true)?; }
         }
+        crate::capture::validate_records(self)?;
+        if let Some(config) = &self.ai_config { config.validate()?; }
         Ok(())
     }
 
@@ -208,6 +218,7 @@ impl Snapshot {
 
     pub fn redacted(&self, mask_private: bool) -> Self {
         let mut out = self.clone();
+        out.captures.clear(); out.proposals.clear(); out.ai_config = None;
         let secret_ids: HashSet<_> = out.entities.iter().filter(|e| e.privacy == "SECRET").map(|e| e.id.clone()).collect();
         out.entities.retain(|e| !secret_ids.contains(&e.id));
         for (i, e) in out.entities.iter_mut().enumerate() {

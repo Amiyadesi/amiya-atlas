@@ -22,9 +22,9 @@ function entity(id: string, name: string, category: string, values: Record<strin
 export function demoSnapshot(): VaultSnapshot {
   const entities: Entity[] = [
     entity('id-google-jp', 'Google Account JP Main', 'Identity', { provider: 'Google', region: 'JP', role: 'main' }, ['google', 'core']),
-    entity('email-gmail-main', 'amiyadesiwa@gmail.com', 'Email', { address: 'amiyadesiwa@gmail.com', provider: 'Gmail', region: 'JP' }, ['mail', 'core']),
+    entity('email-gmail-main', 'atlas.jp@example.invalid', 'Email', { address: 'atlas.jp@example.invalid', provider: 'Gmail', region: 'JP' }, ['mail', 'core']),
     entity('id-google-hk', 'Google Account HK Small', 'Identity', { provider: 'Google', region: 'HK', role: 'secondary' }, ['google', 'secondary']),
-    entity('email-gmail-hk', 'amiyadesi111@gmail.com', 'Email', { address: 'amiyadesi111@gmail.com', provider: 'Gmail', region: 'HK' }, ['mail']),
+    entity('email-gmail-hk', 'atlas.hk@example.invalid', 'Email', { address: 'atlas.hk@example.invalid', provider: 'Gmail', region: 'HK' }, ['mail']),
     entity('service-reddit', 'Reddit Main', 'Website Account', { origin: 'https://www.reddit.com', username: 'main operated account' }, ['social']),
     entity('service-x', 'X Secondary', 'Website Account', { origin: 'https://x.com', username: 'secondary account' }, ['social']),
     entity('cloudflare-main', 'Cloudflare Main', 'Identity', { provider: 'Cloudflare', region: 'Global', role: 'DNS / CDN' }, ['cloud', 'core']),
