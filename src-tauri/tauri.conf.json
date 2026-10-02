@@ -19,7 +19,10 @@
     "active": true,
     "targets": ["nsis"],
     "externalBin": ["binaries/amiya_atlas_native_host"],
-    "resources": ["../extension/*", "../native-host/org.sayori.atlas.json"],
+    "resources": {
+      "../extension/*": "extension/",
+      "../native-host/org.sayori.atlas.json": "native-host/org.sayori.atlas.json"
+    },
     "windows": {
       "nsis": { "installMode": "currentUser", "installerHooks": "installer-hooks.nsh", "languages": ["SimpChinese", "English"] }
     }
