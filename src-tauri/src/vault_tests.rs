@@ -146,7 +146,7 @@ mod tests {
         let input = Capture {
             id: "capture-1".into(),
             raw_text: raw.into(),
-            input_type: "text".into(),
+            input_type: "voice".into(),
             timestamp: domain::now(),
             status: "PENDING".into(),
         };

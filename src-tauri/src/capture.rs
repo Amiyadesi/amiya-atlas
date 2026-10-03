@@ -150,7 +150,7 @@ pub fn validate_records(snapshot: &Snapshot) -> Result<()> {
         nonempty(&capture.raw_text, 10000)?;
         domain::date(&capture.timestamp)?;
         if !ids.insert(&capture.id)
-            || capture.input_type != "text"
+            || !["text", "clipboard", "voice"].contains(&capture.input_type.as_str())
             || !["PENDING", "CONFIRMED", "DISMISSED"].contains(&capture.status.as_str())
         {
             return Err("无效捕获记录".into());

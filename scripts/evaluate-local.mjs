@@ -8,15 +8,39 @@ try {
   const { matchEntities } = await vite.ssrLoadModule("/src/domain/proposal.ts");
   const { emptySnapshot } = await vite.ssrLoadModule("/src/lib/types.ts");
   let requestNumber = 0;
-  await mkdir("qa-artifacts", { recursive: true });
-  const provider = createProvider(DEFAULT_PROVIDER, async (request) => {
-    const output = await chatTransport(request);
-    await writeFile(
-      `qa-artifacts/evaluation-response-${++requestNumber}.txt`,
-      output,
-    );
-    return output;
+  const model = process.env.ATLAS_EVAL_MODEL || DEFAULT_PROVIDER.model;
+  const threads = Number(process.env.ATLAS_EVAL_THREADS || 8);
+  const directory = `qa-artifacts/evaluation-${model.replace(/[^a-z0-9.-]/gi, "_")}-${threads}t`;
+  const fetchTransport = globalThis.fetch;
+  // Run the real transport and parser while selecting a reproducible CPU thread budget.
+  globalThis.fetch = (url, init) => {
+    if (String(url).endsWith("/api/chat") && init?.body) {
+      const body = JSON.parse(init.body);
+      body.options.num_thread = threads;
+      init = { ...init, body: JSON.stringify(body) };
+    }
+    return fetchTransport(url, init);
+  };
+  await fetchTransport(`${DEFAULT_PROVIDER.baseUrl}/api/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model,
+      stream: false,
+      keep_alive: "10m",
+      options: { num_ctx: 4096, num_thread: threads },
+    }),
   });
+  await mkdir("qa-artifacts", { recursive: true });
+  await mkdir(directory, { recursive: true });
+  const provider = createProvider(
+    { ...DEFAULT_PROVIDER, model },
+    async (request) => {
+      const output = await chatTransport(request);
+      await writeFile(`${directory}/response-${++requestNumber}.txt`, output);
+      return output;
+    },
+  );
   const existing = emptySnapshot();
   existing.entities.push({
     id: "00000000-0000-4000-8000-000000000001",
@@ -65,137 +89,171 @@ try {
   for (const sample of samples) {
     if (process.argv[2] && sample.id !== process.argv[2]) continue;
     const start = performance.now();
-    const output = await provider.parseCapture(sample.text, {
-      snapshot: sample.snapshot ?? emptySnapshot(),
-      now: "2026-10-02T12:00:00Z",
-    });
-    await mkdir("qa-artifacts", { recursive: true });
-    await writeFile(
-      `qa-artifacts/${sample.id}-output.json`,
-      JSON.stringify(output, null, 2),
-    );
-    const proposal = matchEntities(
-      output,
-      sample.snapshot ?? emptySnapshot(),
-      sample.text,
-    );
-    await mkdir("qa-artifacts", { recursive: true });
-    await writeFile(
-      `qa-artifacts/${sample.id}-proposal.json`,
-      JSON.stringify(proposal, null, 2),
-    );
-    if (sample.id === "saily") {
-      const sim = proposal.entitiesToCreate.find(
-        (e) => e.type === "Phone / SIM",
+    try {
+      const output = await provider.parseCapture(sample.text, {
+        snapshot: sample.snapshot ?? emptySnapshot(),
+        now: "2026-10-02T12:00:00Z",
+      });
+      await mkdir("qa-artifacts", { recursive: true });
+      await writeFile(
+        `${directory}/${sample.id}-output.json`,
+        JSON.stringify(output, null, 2),
       );
-      assert.ok(sim, "Saily should be a phone/SIM");
-      assert.equal(sim.attributes.region ?? sim.attributes.country, "US");
-      assert.equal(sim.attributes.monthly_cost, 6);
-      assert.equal(sim.attributes.currency, "CNY");
-      assert.equal(sim.status, "ACTIVE");
-      assert.ok(
-        sim.attributes.roles?.includes("备用") &&
-          sim.attributes.roles?.includes("收藏"),
+      const proposal = matchEntities(
+        output,
+        sample.snapshot ?? emptySnapshot(),
+        sample.text,
       );
-      assert.equal(sim.attributes.decision, "Keep");
-      assert.equal(sim.attributes.monthly_cost_approximate, true);
-      assert.ok(
-        sim.notes.includes("约") || sim.notes.includes("多"),
-        "Approximation must remain visible",
+      await mkdir("qa-artifacts", { recursive: true });
+      await writeFile(
+        `${directory}/${sample.id}-proposal.json`,
+        JSON.stringify(proposal, null, 2),
       );
-      assert.equal(
-        proposal.relationsToCreate.length,
-        0,
-        "No invented payment card",
-      );
-    }
-    if (sample.id === "grok") {
-      const event = proposal.eventsToCreate.find((e) => e.type === "EXPIRY");
-      assert.ok(event, "Grok needs an expiry event");
-      assert.equal(event.dueAt, "2026-12");
-      assert.equal(event.precision, "month");
-      assert.equal(event.policy, "DO_NOT_RENEW");
-    }
-    if (sample.id === "cloudflare") {
-      assert.ok(
-        proposal.entitiesToCreate.some(
-          (e) => e.type === "Domain" && e.name === "sayori.org",
-        ),
-      );
-      assert.ok(proposal.entitiesToCreate.some((e) => e.type === "Email"));
-      assert.ok(
-        proposal.relationsToCreate.length >= 2,
-        "Email/account/domain should be connected",
-      );
-      assert.ok(
-        proposal.entitiesToCreate.filter((e) => e.type === "Account").length <=
+      if (sample.id === "saily") {
+        const sim = proposal.entitiesToCreate.find(
+          (e) => e.type === "Phone / SIM",
+        );
+        assert.ok(sim, "Saily should be a phone/SIM");
+        assert.equal(sim.attributes.region ?? sim.attributes.country, "US");
+        assert.equal(sim.attributes.monthly_cost, 6);
+        assert.equal(sim.attributes.currency, "CNY");
+        assert.equal(sim.status, "ACTIVE");
+        assert.ok(
+          sim.attributes.roles?.includes("备用") &&
+            sim.attributes.roles?.includes("收藏"),
+        );
+        assert.equal(sim.attributes.decision, "Keep");
+        assert.equal(sim.attributes.monthly_cost_approximate, true);
+        assert.ok(
+          sim.notes.includes("约") || sim.notes.includes("多"),
+          "Approximation must remain visible",
+        );
+        assert.equal(
+          proposal.relationsToCreate.length,
+          0,
+          "No invented payment card",
+        );
+      }
+      if (sample.id === "grok") {
+        assert.equal(
+          proposal.entitiesToCreate.length,
           1,
-        "Do not invent unnamed accounts",
-      );
+          "Do not invent unrelated entities",
+        );
+        assert.equal(proposal.entitiesToCreate[0].name, "SuperGrok");
+        assert.equal(proposal.entitiesToCreate[0].type, "Subscription");
+        const event = proposal.eventsToCreate.find((e) => e.type === "EXPIRY");
+        assert.ok(event, "Grok needs an expiry event");
+        assert.equal(event.dueAt, "2026-12");
+        assert.equal(event.precision, "month");
+        assert.equal(event.policy, "DO_NOT_RENEW");
+      }
+      if (sample.id === "cloudflare") {
+        assert.ok(
+          proposal.entitiesToCreate.some(
+            (e) => e.type === "Domain" && e.name === "sayori.org",
+          ),
+        );
+        assert.ok(proposal.entitiesToCreate.some((e) => e.type === "Email"));
+        assert.ok(
+          proposal.relationsToCreate.length >= 2,
+          "Email/account/domain should be connected",
+        );
+        assert.ok(
+          proposal.entitiesToCreate.filter((e) => e.type === "Account")
+            .length <= 1,
+          "Do not invent unnamed accounts",
+        );
+      }
+      if (sample.id === "gmail") {
+        const email = proposal.entitiesToCreate.find(
+          (e) => e.type === "Email" && e.name === "atlas-mail@example.invalid",
+        );
+        assert.ok(email);
+        assert.equal(email.attributes.region, "JP");
+      }
+      if (sample.id === "hsbc") {
+        const bank = proposal.entitiesToCreate.find(
+          (e) => e.type === "Bank Account",
+        );
+        assert.ok(bank);
+        assert.equal(bank.attributes.region, "HK");
+        assert.ok(
+          !("balance" in bank.attributes),
+          "Do not invent a bank balance",
+        );
+      }
+      if (sample.id === "server") {
+        const server = proposal.entitiesToCreate.find(
+          (e) => e.type === "Server",
+        );
+        assert.ok(server);
+        assert.ok(JSON.stringify(server).includes("杭州"));
+        assert.ok(!("ip" in server.attributes), "Do not invent an IP address");
+      }
+      if (sample.id === "update") {
+        assert.equal(proposal.entitiesToCreate.length, 0);
+        assert.equal(proposal.entitiesToUpdate.length, 1);
+        assert.equal(proposal.entitiesToUpdate[0].id, existing.entities[0].id);
+        assert.equal(proposal.entitiesToUpdate[0].attributes.monthly_cost, 7);
+        assert.ok(!("carrier" in proposal.entitiesToUpdate[0].attributes));
+      }
+      const entry = {
+        sample: sample.id,
+        pass: true,
+        seconds: Math.round((performance.now() - start) / 100) / 10,
+        entities: proposal.entitiesToCreate.length,
+        updates: proposal.entitiesToUpdate.length,
+        relations: proposal.relationsToCreate.length,
+        events: proposal.eventsToCreate.length,
+        uncertainty: proposal.uncertainty,
+      };
+      report.push(entry);
+      console.log(JSON.stringify(entry));
+    } catch (error) {
+      const entry = {
+        sample: sample.id,
+        pass: false,
+        seconds: Math.round((performance.now() - start) / 100) / 10,
+        error: error.message,
+      };
+      report.push(entry);
+      console.log(JSON.stringify(entry));
     }
-    if (sample.id === "gmail") {
-      const email = proposal.entitiesToCreate.find(
-        (e) => e.type === "Email" && e.name === "atlas-mail@example.invalid",
-      );
-      assert.ok(email);
-      assert.equal(email.attributes.region, "JP");
-    }
-    if (sample.id === "hsbc") {
-      const bank = proposal.entitiesToCreate.find(
-        (e) => e.type === "Bank Account",
-      );
-      assert.ok(bank);
-      assert.equal(bank.attributes.region, "HK");
-      assert.ok(
-        !("balance" in bank.attributes),
-        "Do not invent a bank balance",
-      );
-    }
-    if (sample.id === "server") {
-      const server = proposal.entitiesToCreate.find((e) => e.type === "Server");
-      assert.ok(server);
-      assert.ok(JSON.stringify(server).includes("杭州"));
-      assert.ok(!("ip" in server.attributes), "Do not invent an IP address");
-    }
-    if (sample.id === "update") {
-      assert.equal(proposal.entitiesToCreate.length, 0);
-      assert.equal(proposal.entitiesToUpdate.length, 1);
-      assert.equal(proposal.entitiesToUpdate[0].id, existing.entities[0].id);
-      assert.equal(proposal.entitiesToUpdate[0].attributes.monthly_cost, 7);
-      assert.ok(!("carrier" in proposal.entitiesToUpdate[0].attributes));
-    }
-    const entry = {
-      sample: sample.id,
-      seconds: Math.round((performance.now() - start) / 100) / 10,
-      entities: proposal.entitiesToCreate.length,
-      updates: proposal.entitiesToUpdate.length,
-      relations: proposal.relationsToCreate.length,
-      events: proposal.eventsToCreate.length,
-      uncertainty: proposal.uncertainty,
-    };
-    report.push(entry);
-    console.log(JSON.stringify(entry));
   }
   for (const [query, expected] of [
     ["我有哪些日本的东西？", { search: "", region: "JP" }],
     ["日本的 Google 账号", { search: "Google", region: "JP" }],
   ]) {
     const start = performance.now();
-    const parsed = await provider.parseQuery(query);
-    assert.deepEqual(parsed, expected);
-    const entry = {
-      query,
-      parsed,
-      seconds: Math.round((performance.now() - start) / 100) / 10,
-    };
-    report.push(entry);
-    console.log(JSON.stringify(entry));
+    try {
+      const parsed = await provider.parseQuery(query);
+      assert.deepEqual(parsed, expected);
+      const entry = {
+        query,
+        pass: true,
+        parsed,
+        seconds: Math.round((performance.now() - start) / 100) / 10,
+      };
+      report.push(entry);
+      console.log(JSON.stringify(entry));
+    } catch (error) {
+      const entry = {
+        query,
+        pass: false,
+        seconds: Math.round((performance.now() - start) / 100) / 10,
+        error: error.message,
+      };
+      report.push(entry);
+      console.log(JSON.stringify(entry));
+    }
   }
   await mkdir("qa-artifacts", { recursive: true });
   await writeFile(
-    "qa-artifacts/local-model-evaluation.json",
-    JSON.stringify(report, null, 2),
+    `${directory}/report.json`,
+    JSON.stringify({ model, threads, warm: true, report }, null, 2),
   );
+  if (report.some((r) => !r.pass)) process.exitCode = 1;
 } finally {
   await vite.close();
 }

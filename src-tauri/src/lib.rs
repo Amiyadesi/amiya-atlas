@@ -8,6 +8,9 @@ mod desktop;
 mod domain;
 mod store;
 mod vault;
+mod voice;
+#[cfg(feature = "desktop")]
+mod quick_capture;
 #[cfg(feature = "desktop")]
 pub use desktop::run;
 #[cfg(test)]

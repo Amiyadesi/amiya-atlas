@@ -109,7 +109,7 @@ export type Proposal = z.infer<typeof proposalSchema>;
 export interface TextCapture {
   id: string;
   rawText: string;
-  inputType: "text";
+  inputType: "text" | "clipboard" | "voice";
   timestamp: string;
   status: "PENDING" | "CONFIRMED" | "DISMISSED";
 }
