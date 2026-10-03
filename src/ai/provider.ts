@@ -17,6 +17,22 @@ export interface ProviderConfig {
   apiKey: string;
   responseFormat: "json_schema" | "json_object" | "prompt";
 }
+export const LOCAL_MODELS = [
+  {
+    model: "qwen3.5:2b-q4_K_M",
+    name: "Qwen3.5 2B",
+    label: "均衡 · 推荐",
+    size: "约 1.9 GB",
+    description: "日常中文记录的默认选择。",
+  },
+  {
+    model: "qwen3.5:4b-q4_K_M",
+    name: "Qwen3.5 4B",
+    label: "更大模型",
+    size: "约 3.4 GB",
+    description: "可自行比较复杂描述；占用和等待时间更高。",
+  },
+] as const;
 export const DEFAULT_PROVIDER: ProviderConfig = {
   kind: "local",
   baseUrl: "http://127.0.0.1:11435",
@@ -148,12 +164,13 @@ export const chatTransport: Transport = async (request) => {
         format: schema,
         stream: false,
         think: false,
+        keep_alive: "10m",
         options: {
           temperature: 0,
           seed: 42,
           num_ctx: 4096,
           num_predict: 1536,
-          num_thread: 4,
+          num_thread: 8,
           repeat_penalty: 1.0,
           presence_penalty: 0,
         },
