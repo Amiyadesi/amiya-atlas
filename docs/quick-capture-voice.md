@@ -16,7 +16,7 @@ Atlas 运行时，Ctrl + Shift + Space 打开快速输入；Ctrl + Alt + V 读�
 
 系统听写由操作系统管理。Atlas 内置语音不上传录音；用户若配置远程记忆模型，点击整理后会发送文字与有限的匹配上下文，沿用原有远程模型边界。
 
-## 实测后的默认选择
+## 0.2.0 的基础样例比较（2026-10-03）
 
 使用同一 CPU 开发环境、相同提示词与 Schema、temperature 0、seed 42、4096 上下文，关闭思考；先加载模型，7 条 Capture 加 2 条查询。Saily / SuperGrok / Cloudflare 等名称来自项目验证目标，邮箱用合成地址。断言检查类型、地区、费用、日期精度、可辨认关系、已有实体更新，以及不创造未提供身份的账号；不是完整准确率评测。
 
@@ -27,7 +27,7 @@ Atlas 运行时，Ctrl + Shift + Space 打开快速输入；Ctrl + Alt + V 读�
 | Qwen3.5 2B Q4_K_M，8 线程 | 1.9 GB   | 9 / 9        | 5.6 秒                         |
 | Qwen3.5 4B Q4_K_M，8 线程 | 3.4 GB   | 9 / 9        | 13.7 秒                        |
 
-0.8B 漏掉地区、把更新误做成新建，并为单项订阅创造多余实体；不在受管理的本地选项中提供。4B 在此小样本没有带来更高通过率且更慢，因此默认保持 2B，4B 可选供用户自行比较。较新的 [Qwen3.8](https://ollama.com/library/qwen3.8) 当前为约 18 GB 的 27B，[Gemma 4 E2B](https://ollama.com/library/gemma4) 下载约 4.6 GB 起，本轮没有下载或评测它们。
+0.8B 漏掉地区、把更新误做成新建，并为单项订阅创造多余实体；不在受管理的本地选项中提供。4B 在当时九条基础样例中没有带来更高通过率且更慢，0.2.0 因此推荐 2B。0.2.1 加入复合变更后改为推荐 4B 和 JSON 模式，新增验证见 [记忆变更](memory-changes.md)。较新的 [Qwen3.8](https://ollama.com/library/qwen3.8) 当时为约 18 GB 的 27B，[Gemma 4 E2B](https://ollama.com/library/gemma4) 下载约 4.6 GB 起，本轮没有下载或评测它们。
 
 Atlas Local 线程数由 Rust 按可用 CPU 限制在 1–8，解锁或更换配置后预热已安装模型，保活十分钟。浏览器 / SSR 验证使用固定 8 线程；4 线程对照通过评测脚本覆盖。首次系统提示词预填仍需时间，GPU、硬件、描述长度与校验重试会影响延迟；这些耗时不代表所有电脑。
 
@@ -47,4 +47,4 @@ node scripts/evaluate-local.mjs
 
 真实 Whisper CPU 运行时已转写公开中英音频，中文采用 sherpa 项目维护者的 [公开样例](https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/tree/2365baeacb507f821a0c8120fcee3d484dba7a07/test_wavs)。Windows CI 通过原生下载 / 校验 / 安装 / 转写路径验证同样音频。实际电脑的全局热键占用、麦克风权限、蓝牙设备、个人发音及英文资产名仍需要第一次试玩确认。
 
-升级到 0.2.0 前导出加密备份。此版支持原有 text 捕获，并增加 clipboard / voice 来源与 4B 配置；保存这些记录后，旧版本的校验器不能读取它们，应继续使用新版。
+升级前导出加密备份。0.2.0 增加 clipboard / voice 来源与 4B 配置，0.2.1 增加自然语言变更与撤销；保存新版记录后，旧版校验器不能读取它们，应继续使用新版。

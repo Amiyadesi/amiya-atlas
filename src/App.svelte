@@ -12,6 +12,7 @@
     beginTextCapture,
     stageProposal,
     confirmProposal,
+    undoProposal,
     reviseProposal,
     dismissCapture,
     saveAiConfig,
@@ -142,6 +143,10 @@
   $: previewCapture = snapshot.captures?.find(
     (c) => c.id === preview?.captureId,
   );
+  $: lastUndo = snapshot.proposals?.find(
+    (p) =>
+      p.status === "CONFIRMED" && p.undo?.appliedRevision === snapshot.revision,
+  );
   $: recent = snapshot.entities
     .filter((e) => e.privacy !== "SECRET")
     .slice()
@@ -230,9 +235,9 @@
               kind === "ollama"
                 ? "http://localhost:11434"
                 : "https://api.example.com/v1",
-            model: kind === "ollama" ? "qwen3.5:2b-q4_K_M" : "",
+            model: kind === "ollama" ? DEFAULT_PROVIDER.model : "",
             apiKey: "",
-            responseFormat: kind === "ollama" ? "json_schema" : "json_object",
+            responseFormat: "json_object",
           };
     connection = "";
   }
@@ -413,6 +418,9 @@
     error = "";
     notice = "";
     try {
+      const current = await loadSnapshot();
+      if (token !== epoch || mode !== "ready") return;
+      snapshot = current;
       const content = await createProvider(config).parseCapture(
         capture.rawText,
         { snapshot, now: new Date().toISOString() },
@@ -476,8 +484,36 @@
       snapshot = next;
       const record = snapshot.proposals?.find((p) => p.id === id);
       previewId = "";
-      flash("已记住。原文也一起保留了。");
-      if (record?.entityIds[0]) openEntity(record.entityIds[0]);
+      flash("变更已应用。原文也一起保留了。");
+      const rememberedId = record?.entityIds.find((id) =>
+        snapshot.entities.some((e) => e.id === id && e.privacy !== "SECRET"),
+      );
+      if (rememberedId) openEntity(rememberedId);
+      else navigate("Memory");
+    } catch (failure) {
+      // Refresh after a rejected commit so the stale preview offers a real retry.
+      if (token === epoch) snapshot = await loadSnapshot();
+      throw failure;
+    } finally {
+      if (token === epoch) busy = false;
+    }
+  }
+  async function undoLastConfirmation() {
+    if (!lastUndo || busy || recording || voiceBusy) return;
+    const id = lastUndo.id;
+    const token = epoch;
+    busy = true;
+    error = "";
+    try {
+      const next = await undoProposal(id);
+      if (token !== epoch) return;
+      snapshot = next;
+      selectedId = "";
+      previewId = id;
+      page = "Inbox";
+      flash("已恢复确认前的记忆。这份提案回到待确认，可以修改后再保存。");
+    } catch (e) {
+      if (token === epoch) error = readable(e);
     } finally {
       if (token === epoch) busy = false;
     }
@@ -920,6 +956,13 @@
         >
       </header>
       <div class="page-content">
+        {#if lastUndo}<div class="commit-feedback" role="status">
+            <span>最近一次确认已应用 · 原文已保留</span><button
+              class="secondary"
+              disabled={busy || recording || voiceBusy}
+              on:click={undoLastConfirmation}>撤销这次变更</button
+            >
+          </div>{/if}
         {#if error}<div class="error" role="alert">
             {error}
           </div>{/if}{#if notice}<div class="notice" role="status">
@@ -1036,9 +1079,11 @@
               record={preview}
               capture={previewCapture}
               entities={snapshot.entities}
+              {snapshot}
               {busy}
               onConfirm={confirm}
               onLater={later}
+              onRetry={() => parseCapture(previewCapture!)}
             />{:else}<div class="page-heading">
               <p class="eyebrow">YOUR WORDS, WAITING TO BECOME MEMORY</p>
               <h1>待确认</h1>
@@ -1274,6 +1319,7 @@
                       settingsConfig = {
                         ...settingsConfig,
                         model: model.model,
+                        responseFormat: "json_object",
                       };
                       connection = "";
                     }}
@@ -1334,9 +1380,9 @@
                     ></label
                   >
                   <p class="muted">
-                    选择远程模型后，输入原文及最多 12
-                    个相关实体的名称、类型会发送到这个地址。API Key
-                    在桌面版的加密数据库中保存。
+                    选择远程模型后，输入原文及最多 12 个相关实体的
+                    ID、名称、类型、状态会发送到这个地址。删除或解绑时还会包含相关字段名称、关联及提醒信息。
+                    已有字段值与历史原文不会发送。API Key 在桌面加密保存。
                   </p>{/if}
               </div>
               <button class="secondary" on:click={testConnection}

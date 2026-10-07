@@ -10,7 +10,11 @@ import { emptySnapshot } from "./types";
 import { newId, nowIso } from "./types";
 import type { ProviderConfig } from "../ai/provider";
 import type { Proposal } from "../domain/proposal";
-import { applyBrowserProposal, validateProposal } from "../domain/proposal";
+import {
+  applyBrowserProposal,
+  validateProposal,
+  undoBrowserProposal,
+} from "../domain/proposal";
 
 export const isTauri =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -330,6 +334,21 @@ export async function stageProposal(
     (c) => c.id === captureId && c.status === "PENDING",
   );
   if (!input) throw new Error("原文不存在或已处理");
+  content = structuredClone(content);
+  for (const item of [
+    ...content.entitiesToUpdate,
+    ...(content.entitiesToDelete ?? []),
+  ]) {
+    const entity = browserSnapshot.entities.find(
+      (e) => e.id === item.id && e.privacy !== "SECRET",
+    );
+    if (
+      !entity ||
+      (item.expectedUpdatedAt && item.expectedUpdatedAt !== entity.updatedAt)
+    )
+      throw new Error("记忆已变化，请重新解析");
+    item.expectedUpdatedAt = entity.updatedAt;
+  }
   validateProposal(content, browserSnapshot, input.rawText);
   browserSnapshot = {
     ...browserSnapshot,
@@ -347,6 +366,7 @@ export async function stageProposal(
         status: "PENDING",
         createdAt: nowIso(),
         entityIds: [],
+        baseRevision: browserSnapshot.revision + 1,
       },
     ],
     revision: browserSnapshot.revision + 1,
@@ -364,7 +384,11 @@ export async function reviseProposal(
     ...browserSnapshot,
     proposals: browserSnapshot.proposals?.map((p) =>
       p.id === proposalId && p.status === "PENDING"
-        ? { ...p, content: structuredClone(content) }
+        ? {
+            ...p,
+            content: structuredClone(content),
+            baseRevision: browserSnapshot.revision + 1,
+          }
         : p,
     ),
     revision: browserSnapshot.revision + 1,
@@ -379,6 +403,11 @@ export async function confirmProposal(
   if (isTauri)
     return invoke<VaultSnapshot>("confirm_proposal", { proposalId, content });
   browserSnapshot = applyBrowserProposal(browserSnapshot, proposalId, content);
+  return structuredClone(browserSnapshot);
+}
+export async function undoProposal(proposalId: string): Promise<VaultSnapshot> {
+  if (isTauri) return invoke<VaultSnapshot>("undo_proposal", { proposalId });
+  browserSnapshot = undoBrowserProposal(browserSnapshot, proposalId);
   return structuredClone(browserSnapshot);
 }
 export async function dismissCapture(

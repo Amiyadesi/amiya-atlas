@@ -44,6 +44,7 @@ test("capture proposal can be corrected, saved, searched and explored; failed pa
   await expect(
     page.getByRole("heading", { name: "我理解的是……" }),
   ).toBeVisible();
+  await page.getByText("修改提案", { exact: true }).click();
   await page.getByLabel("Atlas test number monthly_cost").fill("not a number");
   await expect(page.getByRole("button", { name: "确认保存" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "稍后确认" })).toBeDisabled();
@@ -59,6 +60,7 @@ test("capture proposal can be corrected, saved, searched and explored; failed pa
   ).toBeVisible();
   await page.getByRole("button", { name: "待确认 Inbox" }).click();
   await page.getByRole("button", { name: "检查并确认" }).click();
+  await page.getByText("修改提案", { exact: true }).click();
   await expect(page.getByLabel("Atlas test number monthly_cost")).toHaveValue(
     "7",
   );
@@ -175,11 +177,11 @@ test("model profiles and browser voice availability are clear", async ({
   await expect(page.getByRole("button", { name: /均衡 · 推荐/ })).toHaveClass(
     /chosen/,
   );
-  await page.getByRole("button", { name: /更大模型 Qwen3.5 4B/ }).click();
+  await page.getByRole("button", { name: /轻量模型 Qwen3.5 2B/ }).click();
   await page.getByRole("button", { name: "保存模型设置" }).click();
   await expect(page.getByText("模型设置已保存")).toBeVisible();
   await expect(
-    page.getByRole("button", { name: /更大模型 Qwen3.5 4B/ }),
+    page.getByRole("button", { name: /轻量模型 Qwen3.5 2B/ }),
   ).toHaveClass(/chosen/);
   await expect(
     page.getByRole("button", { name: "下载并准备语音模型" }),

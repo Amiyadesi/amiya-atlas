@@ -307,14 +307,7 @@ fn stage_proposal(
         .iter()
         .find(|c| c.id == capture_id && c.status == "PENDING")
         .ok_or("原始输入不存在或已处理")?;
-    for item in &mut content.entities_to_update {
-        let entity = snapshot
-            .entities
-            .iter()
-            .find(|e| Some(&e.id) == item.id.as_ref() && e.privacy != "SECRET")
-            .ok_or("待更新实体不存在")?;
-        item.expected_updated_at = Some(entity.updated_at.clone());
-    }
+    capture::stage_versions(&snapshot, &mut content)?;
     capture::apply_proposal(&snapshot, input, &content)?;
     for record in snapshot
         .proposals
@@ -331,6 +324,8 @@ fn stage_proposal(
         provider,
         created_at: domain::now(),
         entity_ids: vec![],
+        base_revision: Some(snapshot.revision + 1),
+        undo: None,
     });
     vault.save(snapshot, &[])
 }
@@ -342,49 +337,22 @@ fn confirm_proposal(
 ) -> Result<Snapshot> {
     let mut vault = state.vault.lock().map_err(|_| "Vault 状态不可用")?;
     let snapshot = vault.load()?;
-    let record = snapshot
+    if snapshot
         .proposals
         .iter()
-        .find(|p| p.id == proposal_id)
-        .ok_or("提案不存在")?;
-    if record.status == "CONFIRMED" {
+        .any(|p| p.id == proposal_id && p.status == "CONFIRMED")
+    {
         return Ok(snapshot);
     }
-    if record.status != "PENDING" {
-        return Err("提案已被撤回，请重新解析".into());
-    }
-    let input = snapshot
-        .captures
-        .iter()
-        .find(|c| c.id == record.capture_id && c.status == "PENDING")
-        .ok_or("原文已处理")?;
-    // Preserve the staged version guard, even when the user edits the other proposal fields.
-    for update in &content.entities_to_update {
-        let staged = record
-            .content
-            .entities_to_update
-            .iter()
-            .find(|u| u.id == update.id)
-            .ok_or("修改目标已变化，请重新解析")?;
-        if update.expected_updated_at != staged.expected_updated_at {
-            return Err("提案版本已变化，请重新解析".into());
-        }
-    }
-    let (mut next, entity_ids) = capture::apply_proposal(&snapshot, input, &content)?;
-    let proposal = next
-        .proposals
-        .iter_mut()
-        .find(|p| p.id == proposal_id)
-        .unwrap();
-    proposal.status = "CONFIRMED".into();
-    proposal.content = content;
-    proposal.entity_ids = entity_ids;
-    next.captures
-        .iter_mut()
-        .find(|c| c.id == record.capture_id)
-        .unwrap()
-        .status = "CONFIRMED".into();
-    vault.save(next, &[])
+    let (next, unlink_ids) = capture::confirm(&snapshot, &proposal_id, &content)?;
+    vault.save(next, &unlink_ids)
+}
+#[tauri::command]
+fn undo_proposal(proposal_id: String, state: State<'_, AppState>) -> Result<Snapshot> {
+    let mut vault = state.vault.lock().map_err(|_| "Vault 状态不可用")?;
+    let snapshot = vault.load()?;
+    let (next, unlink_ids) = capture::undo(&snapshot, &proposal_id)?;
+    vault.save(next, &unlink_ids)
 }
 #[tauri::command]
 fn revise_proposal(
@@ -404,17 +372,7 @@ fn revise_proposal(
         .iter()
         .find(|c| c.id == record.capture_id && c.status == "PENDING")
         .ok_or("原文已处理")?;
-    for update in &content.entities_to_update {
-        let staged = record
-            .content
-            .entities_to_update
-            .iter()
-            .find(|u| u.id == update.id)
-            .ok_or("修改目标已变化，请重新解析")?;
-        if update.expected_updated_at != staged.expected_updated_at {
-            return Err("提案版本已变化，请重新解析".into());
-        }
-    }
+    capture::guard_staged(&snapshot, record, &content)?;
     capture::apply_proposal(&snapshot, input, &content)?;
     snapshot
         .proposals
@@ -422,6 +380,12 @@ fn revise_proposal(
         .find(|p| p.id == proposal_id)
         .unwrap()
         .content = content;
+    snapshot
+        .proposals
+        .iter_mut()
+        .find(|p| p.id == proposal_id)
+        .unwrap()
+        .base_revision = Some(snapshot.revision + 1);
     vault.save(snapshot, &[])
 }
 #[tauri::command]
@@ -696,6 +660,7 @@ pub fn run() {
             begin_text_capture,
             stage_proposal,
             confirm_proposal,
+            undo_proposal,
             revise_proposal,
             dismiss_capture,
             save_ai_config,

@@ -161,6 +161,8 @@ mod tests {
             provider: "test".into(),
             created_at: domain::now(),
             entity_ids: vec![],
+            base_revision: None,
+            undo: None,
         });
         snapshot.ai_config = Some(AiConfig {
             kind: "openai-compatible".into(),

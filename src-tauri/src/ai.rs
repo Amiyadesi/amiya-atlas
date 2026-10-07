@@ -10,8 +10,8 @@ use std::{
 };
 
 pub const LOCAL_URL: &str = "http://127.0.0.1:11435";
-pub const DEFAULT_MODEL: &str = "qwen3.5:2b-q4_K_M";
-pub const LOCAL_MODELS: &[&str] = &[DEFAULT_MODEL, "qwen3.5:4b-q4_K_M"];
+pub const DEFAULT_MODEL: &str = "qwen3.5:4b-q4_K_M";
+pub const LOCAL_MODELS: &[&str] = &["qwen3.5:2b-q4_K_M", DEFAULT_MODEL];
 #[cfg(all(windows, target_arch = "x86_64"))]
 const RUNTIME_URL: &str =
     "https://github.com/ollama/ollama/releases/download/v0.35.0/ollama-windows-amd64.zip";
@@ -42,7 +42,7 @@ impl Default for AiConfig {
             base_url: LOCAL_URL.into(),
             model: DEFAULT_MODEL.into(),
             api_key: String::new(),
-            response_format: "json_schema".into(),
+            response_format: "json_object".into(),
         }
     }
 }
@@ -172,11 +172,22 @@ pub fn chat(request: &ChatRequest) -> Result<String> {
     let config = &request.config;
     let ollama = config.kind != "openai-compatible";
     let mut body = if ollama {
-        json!({"model":config.model,"messages":request.messages,"format":request.schema,"stream":false,"think":false,"keep_alive":"10m","options":{"temperature":0,"seed":42,"num_ctx":4096,"num_predict":1536,"num_thread":cpu_threads(),"repeat_penalty":1.0,"presence_penalty":0}})
+        json!({"model":config.model,"messages":request.messages,"stream":false,"think":false,"keep_alive":"10m","options":{"temperature":0,"seed":42,"num_ctx":4096,"num_predict":1536,"num_thread":cpu_threads(),"repeat_penalty":1.0,"presence_penalty":0}})
     } else {
         json!({"model":config.model,"messages":request.messages,"temperature":0.1,"max_tokens":3072,"stream":false})
     };
-    if !ollama {
+    if ollama {
+        let format = if config.kind == "local" {
+            "json_object"
+        } else {
+            config.response_format.as_str()
+        };
+        match format {
+            "json_schema" => body["format"] = request.schema.clone(),
+            "json_object" => body["format"] = json!("json"),
+            _ => {}
+        }
+    } else {
         match config.response_format.as_str() {
             "json_schema" => {
                 body["response_format"] = json!({"type":"json_schema","json_schema":{"name":"atlas_proposal","strict":false,"schema":request.schema}});

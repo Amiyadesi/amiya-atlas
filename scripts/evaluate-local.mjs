@@ -10,7 +10,10 @@ try {
   let requestNumber = 0;
   const model = process.env.ATLAS_EVAL_MODEL || DEFAULT_PROVIDER.model;
   const threads = Number(process.env.ATLAS_EVAL_THREADS || 8);
-  const directory = `qa-artifacts/evaluation-${model.replace(/[^a-z0-9.-]/gi, "_")}-${threads}t`;
+  const format =
+    process.env.ATLAS_EVAL_FORMAT || DEFAULT_PROVIDER.responseFormat;
+  assert.ok(["json_schema", "json_object", "prompt"].includes(format));
+  const directory = `qa-artifacts/evaluation-${model.replace(/[^a-z0-9.-]/gi, "_")}-${threads}t-${format}`;
   const fetchTransport = globalThis.fetch;
   // Run the real transport and parser while selecting a reproducible CPU thread budget.
   globalThis.fetch = (url, init) => {
@@ -34,7 +37,12 @@ try {
   await mkdir("qa-artifacts", { recursive: true });
   await mkdir(directory, { recursive: true });
   const provider = createProvider(
-    { ...DEFAULT_PROVIDER, model },
+    {
+      ...DEFAULT_PROVIDER,
+      kind: process.env.ATLAS_EVAL_FORMAT ? "ollama" : DEFAULT_PROVIDER.kind,
+      model,
+      responseFormat: format,
+    },
     async (request) => {
       const output = await chatTransport(request);
       await writeFile(`${directory}/response-${++requestNumber}.txt`, output);
@@ -59,9 +67,46 @@ try {
         searchable: true,
         privacy: "PRIVATE",
       },
+      {
+        id: "monthly-cost",
+        entityId: "00000000-0000-4000-8000-000000000001",
+        key: "monthly_cost",
+        value: 6,
+        valueType: "number",
+        searchable: true,
+        privacy: "PRIVATE",
+      },
     ],
     createdAt: "2026-10-01T00:00:00Z",
     updatedAt: "2026-10-01T00:00:00Z",
+  });
+  existing.entities.push({
+    id: "00000000-0000-4000-8000-000000000002",
+    name: "Reddit Main",
+    category: "Account",
+    status: "ACTIVE",
+    privacy: "PRIVATE",
+    tags: [],
+    fields: [],
+    createdAt: "2026-10-01T00:00:00Z",
+    updatedAt: "2026-10-01T00:00:00Z",
+  });
+  existing.relations.push({
+    id: "test-recovery",
+    sourceId: existing.entities[1].id,
+    targetId: existing.entities[0].id,
+    type: "RECOVERS_WITH",
+    privacy: "PRIVATE",
+    createdAt: "2026-10-01T00:00:00Z",
+  });
+  existing.events.push({
+    id: "test-review",
+    entityId: existing.entities[0].id,
+    type: "REVIEW",
+    dueAt: "2026-12",
+    duePrecision: "month",
+    policy: "REVIEW",
+    status: "UPCOMING",
   });
   const samples = [
     {
@@ -82,6 +127,36 @@ try {
     {
       id: "update",
       text: "把 Saily 月费改成七元，其他信息保持。",
+      snapshot: existing,
+    },
+    {
+      id: "retire",
+      text: "我放弃 Saily 了，改用 3HK 香港备用号码。",
+      snapshot: existing,
+    },
+    {
+      id: "delete",
+      text: "从 Atlas 删除 Saily，另外新记 3HK 香港备用号码。",
+      snapshot: existing,
+    },
+    {
+      id: "field-delete",
+      text: "删除 Saily 的月费属性，其余保留。",
+      snapshot: existing,
+    },
+    {
+      id: "reminder-delete",
+      text: "取消 Saily 的复查提醒。",
+      snapshot: existing,
+    },
+    {
+      id: "unlink",
+      text: "解除 Reddit Main 与 Saily 的找回关联。",
+      snapshot: existing,
+    },
+    {
+      id: "negated",
+      text: "不要删除 Saily，把月费改成八元。",
       snapshot: existing,
     },
   ];
@@ -198,6 +273,81 @@ try {
         assert.equal(proposal.entitiesToUpdate[0].attributes.monthly_cost, 7);
         assert.ok(!("carrier" in proposal.entitiesToUpdate[0].attributes));
       }
+      if (sample.id === "retire" || sample.id === "delete") {
+        const newSim = proposal.entitiesToCreate.find(
+          (e) => e.name.includes("3HK") && e.type === "Phone / SIM",
+        );
+        assert.ok(newSim, "Replacement number should be created");
+        assert.equal(newSim.attributes.region, "HK");
+        assert.ok(
+          !("monthly_cost" in newSim.attributes) &&
+            !("currency" in newSim.attributes),
+          "Do not invent replacement costs",
+        );
+        if (sample.id === "retire") {
+          assert.equal(
+            proposal.entitiesToUpdate.find(
+              (e) => e.id === existing.entities[0].id,
+            )?.status,
+            "INACTIVE",
+          );
+          assert.equal(
+            proposal.entitiesToDelete?.length ?? 0,
+            0,
+            "Abandonment preserves the record",
+          );
+        } else {
+          assert.deepEqual(
+            proposal.entitiesToDelete?.map((e) => e.id),
+            [existing.entities[0].id],
+          );
+          assert.equal(
+            proposal.entitiesToUpdate.some(
+              (e) => e.id === existing.entities[0].id,
+            ),
+            false,
+          );
+        }
+      }
+      if (sample.id === "field-delete") {
+        assert.deepEqual(
+          proposal.entitiesToUpdate.find(
+            (e) => e.id === existing.entities[0].id,
+          )?.attributesToRemove,
+          ["monthly_cost"],
+        );
+        assert.equal(proposal.entitiesToDelete?.length ?? 0, 0);
+        assert.deepEqual(proposal.entitiesToUpdate[0].attributes, {});
+        assert.equal(proposal.entitiesToUpdate[0].status, "ACTIVE");
+      }
+      if (sample.id === "reminder-delete") {
+        assert.deepEqual(
+          proposal.eventsToDelete?.map((e) => e.id),
+          ["test-review"],
+        );
+        assert.equal(proposal.entitiesToDelete?.length ?? 0, 0);
+        assert.equal(proposal.entitiesToUpdate.length, 0);
+        assert.equal(proposal.eventsToCreate.length, 0);
+      }
+      if (sample.id === "unlink") {
+        assert.deepEqual(
+          proposal.relationsToDelete?.map((e) => e.id),
+          ["test-recovery"],
+        );
+        assert.equal(proposal.entitiesToDelete?.length ?? 0, 0);
+        assert.equal(proposal.entitiesToUpdate.length, 0);
+        assert.equal(proposal.relationsToCreate.length, 0);
+      }
+      if (sample.id === "negated") {
+        assert.equal(proposal.entitiesToDelete?.length ?? 0, 0);
+        assert.equal(
+          proposal.entitiesToUpdate.find(
+            (e) => e.id === existing.entities[0].id,
+          )?.attributes.monthly_cost,
+          8,
+        );
+        assert.equal(proposal.entitiesToUpdate[0].status, "ACTIVE");
+      }
       const entry = {
         sample: sample.id,
         pass: true,
@@ -206,6 +356,10 @@ try {
         updates: proposal.entitiesToUpdate.length,
         relations: proposal.relationsToCreate.length,
         events: proposal.eventsToCreate.length,
+        deletions:
+          (proposal.entitiesToDelete?.length ?? 0) +
+          (proposal.relationsToDelete?.length ?? 0) +
+          (proposal.eventsToDelete?.length ?? 0),
         uncertainty: proposal.uncertainty,
       };
       report.push(entry);
@@ -251,7 +405,7 @@ try {
   await mkdir("qa-artifacts", { recursive: true });
   await writeFile(
     `${directory}/report.json`,
-    JSON.stringify({ model, threads, warm: true, report }, null, 2),
+    JSON.stringify({ model, threads, format, warm: true, report }, null, 2),
   );
   if (report.some((r) => !r.pass)) process.exitCode = 1;
 } finally {
