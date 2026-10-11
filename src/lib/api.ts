@@ -10,7 +10,11 @@ import { emptySnapshot } from "./types";
 import { newId, nowIso } from "./types";
 import type { ProviderConfig } from "../ai/provider";
 import type { Proposal } from "../domain/proposal";
-import { applyBrowserProposal, validateProposal } from "../domain/proposal";
+import {
+  applyBrowserProposal,
+  validateProposal,
+  undoBrowserProposal,
+} from "../domain/proposal";
 
 export const isTauri =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -291,8 +295,12 @@ export async function exportRedacted(maskPrivate = true): Promise<string> {
   return invoke<string>("export_redacted", { maskPrivate });
 }
 
-export async function beginTextCapture(text: string): Promise<VaultSnapshot> {
-  if (isTauri) return invoke<VaultSnapshot>("begin_text_capture", { text });
+export async function beginTextCapture(
+  text: string,
+  inputType: "text" | "clipboard" | "voice" = "text",
+): Promise<VaultSnapshot> {
+  if (isTauri)
+    return invoke<VaultSnapshot>("begin_text_capture", { text, inputType });
   if (!text.trim() || text.length > 10000)
     throw new Error("请输入 1–10000 字的记忆");
   browserSnapshot = {
@@ -302,7 +310,7 @@ export async function beginTextCapture(text: string): Promise<VaultSnapshot> {
       {
         id: newId("capture"),
         rawText: text.trim(),
-        inputType: "text",
+        inputType,
         timestamp: nowIso(),
         status: "PENDING",
       },
@@ -326,6 +334,21 @@ export async function stageProposal(
     (c) => c.id === captureId && c.status === "PENDING",
   );
   if (!input) throw new Error("原文不存在或已处理");
+  content = structuredClone(content);
+  for (const item of [
+    ...content.entitiesToUpdate,
+    ...(content.entitiesToDelete ?? []),
+  ]) {
+    const entity = browserSnapshot.entities.find(
+      (e) => e.id === item.id && e.privacy !== "SECRET",
+    );
+    if (
+      !entity ||
+      (item.expectedUpdatedAt && item.expectedUpdatedAt !== entity.updatedAt)
+    )
+      throw new Error("记忆已变化，请重新解析");
+    item.expectedUpdatedAt = entity.updatedAt;
+  }
   validateProposal(content, browserSnapshot, input.rawText);
   browserSnapshot = {
     ...browserSnapshot,
@@ -343,6 +366,7 @@ export async function stageProposal(
         status: "PENDING",
         createdAt: nowIso(),
         entityIds: [],
+        baseRevision: browserSnapshot.revision + 1,
       },
     ],
     revision: browserSnapshot.revision + 1,
@@ -360,7 +384,11 @@ export async function reviseProposal(
     ...browserSnapshot,
     proposals: browserSnapshot.proposals?.map((p) =>
       p.id === proposalId && p.status === "PENDING"
-        ? { ...p, content: structuredClone(content) }
+        ? {
+            ...p,
+            content: structuredClone(content),
+            baseRevision: browserSnapshot.revision + 1,
+          }
         : p,
     ),
     revision: browserSnapshot.revision + 1,
@@ -375,6 +403,11 @@ export async function confirmProposal(
   if (isTauri)
     return invoke<VaultSnapshot>("confirm_proposal", { proposalId, content });
   browserSnapshot = applyBrowserProposal(browserSnapshot, proposalId, content);
+  return structuredClone(browserSnapshot);
+}
+export async function undoProposal(proposalId: string): Promise<VaultSnapshot> {
+  if (isTauri) return invoke<VaultSnapshot>("undo_proposal", { proposalId });
+  browserSnapshot = undoBrowserProposal(browserSnapshot, proposalId);
   return structuredClone(browserSnapshot);
 }
 export async function dismissCapture(
@@ -406,9 +439,24 @@ export async function saveAiConfig(
   };
   return structuredClone(browserSnapshot);
 }
-export async function prepareLocalModel(): Promise<void> {
+export async function prepareLocalModel(model: string): Promise<void> {
   if (!isTauri) throw new Error("请在桌面版下载本地模型；浏览器仅提供临时预览");
-  return invoke("prepare_local_model");
+  return invoke("prepare_local_model", { model });
+}
+
+export async function readCaptureClipboard(): Promise<string> {
+  const text = isTauri
+    ? await invoke<string>("read_capture_clipboard")
+    : await navigator.clipboard.readText();
+  if (!text.trim()) throw new Error("剪贴板里没有文字");
+  if (text.length > 10000)
+    throw new Error("剪贴板超过 10000 字，请选取需要的内容");
+  return text.trim();
+}
+
+export async function warmLocalModel(config: ProviderConfig): Promise<void> {
+  if (isTauri && config.kind === "local")
+    await invoke("warm_local_model", { config });
 }
 
 export async function handleCapture(

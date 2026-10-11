@@ -146,7 +146,7 @@ mod tests {
         let input = Capture {
             id: "capture-1".into(),
             raw_text: raw.into(),
-            input_type: "text".into(),
+            input_type: "voice".into(),
             timestamp: domain::now(),
             status: "PENDING".into(),
         };
@@ -161,6 +161,8 @@ mod tests {
             provider: "test".into(),
             created_at: domain::now(),
             entity_ids: vec![],
+            base_revision: None,
+            undo: None,
         });
         snapshot.ai_config = Some(AiConfig {
             kind: "openai-compatible".into(),

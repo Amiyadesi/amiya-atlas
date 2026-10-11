@@ -1,6 +1,14 @@
 import { z } from "zod";
 import type { Entity, VaultSnapshot } from "../lib/types";
 import { RELATION_TYPES, newId, nowIso } from "../lib/types";
+import {
+  deletionTargets,
+  projectEntity,
+  validateRemovals,
+  createUndo,
+  undoBrowserProposal,
+} from "./changes";
+export { undoBrowserProposal };
 
 export const ENTITY_TYPES = [
   "Generic",
@@ -21,10 +29,12 @@ export function attributeLabel(key: string): string {
     region: "地区",
     country: "国家 / 地区",
     provider: "服务商",
+    carrier: "服务商",
     monthly_cost: "月费",
     monthly_cost_approximate: "费用为约数",
     currency: "币种",
     roles: "用途",
+    role: "用途",
     decision: "目前决定",
     account_count: "账号总数",
     email: "邮箱",
@@ -61,7 +71,13 @@ const shape = {
   attributes,
   notes: z.string().max(5000),
   evidence: z.string().min(1).max(10000),
+  attributesToRemove: z.array(text).max(50).optional(),
 };
+const removal = z.strictObject({
+  id: text,
+  expectedUpdatedAt: z.string().optional(),
+  evidence: shape.evidence,
+});
 export const proposalSchema = z.strictObject({
   entitiesToCreate: z.array(z.strictObject({ ref: text, ...shape })).max(20),
   entitiesToUpdate: z
@@ -104,12 +120,15 @@ export const proposalSchema = z.strictObject({
     )
     .max(30),
   uncertainty: z.array(z.string().max(1000)).max(30),
+  entitiesToDelete: z.array(removal).max(20).optional(),
+  relationsToDelete: z.array(removal).max(50).optional(),
+  eventsToDelete: z.array(removal).max(30).optional(),
 });
 export type Proposal = z.infer<typeof proposalSchema>;
 export interface TextCapture {
   id: string;
   rawText: string;
-  inputType: "text";
+  inputType: "text" | "clipboard" | "voice";
   timestamp: string;
   status: "PENDING" | "CONFIRMED" | "DISMISSED";
 }
@@ -121,6 +140,8 @@ export interface ProposalRecord {
   provider: string;
   createdAt: string;
   entityIds: string[];
+  baseRevision?: number;
+  undo?: import("./changes").ProposalUndo;
 }
 
 export function parseModelJson(output: string): unknown {
@@ -197,6 +218,13 @@ export function matchEntities(
     if (!entity) throw new Error("模型引用了不存在或不可访问的实体，请重试");
     update.expectedUpdatedAt = entity.updatedAt;
   }
+  for (const removal of proposal.entitiesToDelete ?? []) {
+    const entity = snapshot.entities.find(
+      (e) => e.id === removal.id && e.privacy !== "SECRET",
+    );
+    if (!entity) throw new Error("待删除记忆不存在或不可访问");
+    removal.expectedUpdatedAt = entity.updatedAt;
+  }
   proposal.relationsToCreate.forEach((r) => {
     r.from = remap.get(r.from) ?? r.from;
     r.to = remap.get(r.to) ?? r.to;
@@ -218,7 +246,12 @@ export function validateProposal(
     !proposal.entitiesToCreate.length &&
     !proposal.entitiesToUpdate.length &&
     !proposal.relationsToCreate.length &&
-    !proposal.eventsToCreate.length
+    !proposal.eventsToCreate.length &&
+    !(
+      proposal.entitiesToDelete?.length ||
+      proposal.relationsToDelete?.length ||
+      proposal.eventsToDelete?.length
+    )
   )
     throw new Error("没有识别出可保存的记忆，请补充名称或信息");
   const known = new Set(
@@ -234,15 +267,28 @@ export function validateProposal(
   for (const update of proposal.entitiesToUpdate) {
     if (!known.has(update.id) || updates.has(update.id))
       throw new Error("提案含无效或重复更新");
+    const entity = snapshot.entities.find((e) => e.id === update.id)!;
+    if (
+      entity.fields.some(
+        (f) =>
+          f.privacy === "SECRET" &&
+          (f.key in update.attributes || (f.key === "notes" && update.notes)),
+      )
+    )
+      throw new Error("AI 不可覆盖秘密字段");
     updates.add(update.id);
   }
   const exists = (id: string) => known.has(id) || refs.has(id);
+  validateRemovals(proposal, snapshot, rawText);
+  const deleted = new Set((proposal.entitiesToDelete ?? []).map((e) => e.id));
   const edges = new Set<string>();
   for (const relation of proposal.relationsToCreate) {
     if (
       !exists(relation.from) ||
       !exists(relation.to) ||
-      relation.from === relation.to
+      relation.from === relation.to ||
+      deleted.has(relation.from) ||
+      deleted.has(relation.to)
     )
       throw new Error("关系必须连接两个已知实体");
     const key = `${relation.from}\0${relation.type}\0${relation.to}`;
@@ -250,7 +296,8 @@ export function validateProposal(
     edges.add(key);
   }
   for (const event of proposal.eventsToCreate) {
-    if (!exists(event.entityRef)) throw new Error("事件引用了不存在的实体");
+    if (!exists(event.entityRef) || deleted.has(event.entityRef))
+      throw new Error("事件引用了不存在或待删除的实体");
     const pattern = {
       day: /^\d{4}-\d{2}-\d{2}$/,
       month: /^\d{4}-\d{2}$/,
@@ -279,6 +326,9 @@ export function validateProposal(
     ...proposal.entitiesToUpdate,
     ...proposal.relationsToCreate,
     ...proposal.eventsToCreate,
+    ...(proposal.entitiesToDelete ?? []),
+    ...(proposal.relationsToDelete ?? []),
+    ...(proposal.eventsToDelete ?? []),
   ];
   if (changes.some((c) => !rawText.includes(c.evidence)))
     throw new Error("提案缺少原文依据，请重试");
@@ -388,8 +438,44 @@ export function applyBrowserProposal(
   if (!input) throw new Error("原文已处理");
   validateProposal(content, current, input.rawText);
   const next = structuredClone(current);
+  const destructive = !!(
+    content.entitiesToDelete?.length ||
+    content.relationsToDelete?.length ||
+    content.eventsToDelete?.length ||
+    content.entitiesToUpdate.some((e) => e.attributesToRemove?.length)
+  );
+  if (destructive && record.baseRevision !== current.revision)
+    throw new Error("记忆库已变化，请重新解析后确认删除");
+  for (const key of [
+    "entitiesToDelete",
+    "relationsToDelete",
+    "eventsToDelete",
+  ] as const) {
+    for (const item of content[key] ?? []) {
+      const staged = record.content[key]?.find((e) => e.id === item.id);
+      if (!staged || staged.expectedUpdatedAt !== item.expectedUpdatedAt)
+        throw new Error("删除目标或版本已变化，请重新解析");
+    }
+  }
+  const removals = deletionTargets(content, current);
+  for (const item of content.entitiesToDelete ?? []) {
+    const entity = current.entities.find((e) => e.id === item.id)!;
+    if (entity.updatedAt !== item.expectedUpdatedAt)
+      throw new Error("待删除记忆已变化，请重新解析");
+  }
+  next.entities = next.entities.filter((e) => !removals.entities.has(e.id));
+  next.relations = next.relations.filter((r) => !removals.relations.has(r.id));
+  next.events = next.events.filter((e) => !removals.events.has(e.id));
   const refs = new Map(next.entities.map((e) => [e.id, e.id]));
-  const changed = new Set<string>();
+  const changed = new Set<string>(removals.entities);
+  for (const relation of current.relations.filter((r) =>
+    removals.relations.has(r.id),
+  )) {
+    changed.add(relation.sourceId);
+    changed.add(relation.targetId);
+  }
+  for (const event of current.events.filter((e) => removals.events.has(e.id)))
+    changed.add(event.entityId);
   const timestamp = nowIso();
   const patch = (
     entity: Entity,
@@ -397,44 +483,7 @@ export function applyBrowserProposal(
       | Proposal["entitiesToCreate"][number]
       | Proposal["entitiesToUpdate"][number],
   ) => {
-    entity.name = item.name;
-    entity.status = item.status;
-    entity.updatedAt = timestamp;
-    const attrs = { ...item.attributes };
-    if (item.notes) {
-      const old = String(
-        entity.fields.find((f) => f.key === "notes")?.value ?? "",
-      );
-      attrs.notes =
-        old && !old.includes(item.notes)
-          ? `${old}\n${item.notes}`
-          : old || item.notes;
-    }
-    for (const [key, value] of Object.entries(attrs)) {
-      const valueType =
-        typeof value === "number"
-          ? "number"
-          : typeof value === "boolean"
-            ? "boolean"
-            : Array.isArray(value)
-              ? "json"
-              : "text";
-      const field = entity.fields.find((f) => f.key === key);
-      if (field?.privacy === "SECRET") throw new Error("AI 不可覆盖秘密字段");
-      if (field) {
-        field.value = value;
-        field.valueType = valueType;
-      } else
-        entity.fields.push({
-          id: newId("field"),
-          entityId: entity.id,
-          key,
-          value,
-          valueType,
-          privacy: "PRIVATE",
-          searchable: true,
-        });
-    }
+    Object.assign(entity, projectEntity(entity, item, timestamp));
   };
   for (const item of content.entitiesToCreate) {
     if (
@@ -531,8 +580,9 @@ export function applyBrowserProposal(
           status: "CONFIRMED",
           content: structuredClone(content),
           entityIds: [...changed],
+          undo: createUndo(current, next, current.revision + 1),
         }
-      : p,
+      : { ...p, undo: undefined },
   );
   next.revision += 1;
   return next;

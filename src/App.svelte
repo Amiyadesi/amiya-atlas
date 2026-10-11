@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
+  import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import {
     isTauri,
@@ -11,10 +12,13 @@
     beginTextCapture,
     stageProposal,
     confirmProposal,
+    undoProposal,
     reviseProposal,
     dismissCapture,
     saveAiConfig,
     prepareLocalModel,
+    readCaptureClipboard,
+    warmLocalModel,
     exportBackup,
     importBackup,
     exportRedacted,
@@ -23,7 +27,11 @@
   } from "./lib/api";
   import { emptySnapshot } from "./lib/types";
   import type { Entity, VaultSnapshot } from "./lib/types";
-  import { DEFAULT_PROVIDER, createProvider } from "./ai/provider";
+  import {
+    DEFAULT_PROVIDER,
+    LOCAL_MODELS,
+    createProvider,
+  } from "./ai/provider";
   import type { ProviderConfig } from "./ai/provider";
   import {
     matchEntities,
@@ -34,6 +42,14 @@
   import type { Proposal, TextCapture } from "./domain/proposal";
   import ProposalPreview from "./features/capture/ProposalPreview.svelte";
   import ExploreCanvas from "./features/graph/ExploreCanvas.svelte";
+  import CaptureComposer from "./features/capture/CaptureComposer.svelte";
+  import { PcmRecorder } from "./features/voice/recorder";
+  import {
+    voiceStatus,
+    prepareVoice,
+    transcribeVoice,
+    cancelVoice,
+  } from "./features/voice/api";
 
   type Page = "Home" | "Search" | "Memory" | "Explore" | "Inbox" | "Settings";
   const pages: Page[] = [
@@ -82,6 +98,35 @@
   let connection = "";
   let progress = { stage: "", completed: 0, total: 0 };
   let captureInput: HTMLTextAreaElement;
+  let quickInput: HTMLTextAreaElement;
+  let quickDialog: HTMLDialogElement;
+  let quickOpen = false;
+  let inputType: TextCapture["inputType"] = "text";
+  let recording = false;
+  let voiceBusy = false;
+  let voiceInstalling = false;
+  let voiceLabel = "正在本机转写…";
+  let voiceSeconds = 0;
+  let voiceLevel = 0;
+  let voiceLanguage = "auto";
+  let voiceInfo = {
+    supported: isTauri,
+    ready: false,
+    model: "Whisper Small Q5_1",
+    prerequisite: null as string | null,
+  };
+  let voiceProgress = { stage: "", completed: 0, total: 0 };
+  let quickStatus = {
+    enabled: true,
+    shortcuts: [] as Array<{
+      action: string;
+      key: string;
+      registered: boolean;
+    }>,
+  };
+  let recorder: PcmRecorder | undefined;
+  let voiceTimer: number | undefined;
+  let voiceEpoch = 0;
   let epoch = 0;
   let pendingImport: { text: string; summary: string } | null = null;
   const samples = [
@@ -97,6 +142,10 @@
   );
   $: previewCapture = snapshot.captures?.find(
     (c) => c.id === preview?.captureId,
+  );
+  $: lastUndo = snapshot.proposals?.find(
+    (p) =>
+      p.status === "CONFIRMED" && p.undo?.appliedRevision === snapshot.revision,
   );
   $: recent = snapshot.entities
     .filter((e) => e.privacy !== "SECRET")
@@ -131,6 +180,9 @@
         .map((p) => snapshot.captures?.find((c) => c.id === p.captureId))
         .filter((c): c is TextCapture => !!c)
     : [];
+  $: selectedLocalModel =
+    LOCAL_MODELS.find((m) => m.model === settingsConfig.model) ??
+    LOCAL_MODELS[0];
 
   const readable = (e: unknown) => (e instanceof Error ? e.message : String(e));
   function flash(message: string) {
@@ -153,6 +205,7 @@
     return Number.isNaN(d.getTime()) ? value : d.toLocaleDateString("zh-CN");
   }
   function navigate(next: Page) {
+    if (recording || voiceBusy) stopVoice();
     page = next;
     selectedId = "";
     previewId = "";
@@ -182,16 +235,19 @@
               kind === "ollama"
                 ? "http://localhost:11434"
                 : "https://api.example.com/v1",
-            model: kind === "ollama" ? "qwen3.5:2b-q4_K_M" : "",
+            model: kind === "ollama" ? DEFAULT_PROVIDER.model : "",
             apiKey: "",
-            responseFormat: kind === "ollama" ? "json_schema" : "json_object",
+            responseFormat: "json_object",
           };
     connection = "";
   }
   function clearPrivateState() {
+    stopVoice();
+    quickOpen = false;
     epoch++;
     snapshot = emptySnapshot();
     text = "";
+    inputType = "text";
     query = "";
     selectedId = "";
     rootId = "";
@@ -235,15 +291,29 @@
     }
   }
   onMount(() => {
-    let unlisten: (() => void) | undefined;
+    const unlisteners: Array<() => void> = [];
     let alive = true;
     if (isTauri)
       void listen<typeof progress>("atlas-model-progress", (event) => {
         if (alive) progress = event.payload;
       }).then((fn) => {
-        if (alive) unlisten = fn;
+        if (alive) unlisteners.push(fn);
         else fn();
       });
+    if (isTauri) {
+      void listen<typeof voiceProgress>("atlas-voice-progress", (event) => {
+        if (alive) voiceProgress = event.payload;
+      }).then((fn) => {
+        if (alive) unlisteners.push(fn);
+        else fn();
+      });
+      void listen<string>("atlas-quick-capture", (event) => {
+        if (alive) void openQuickCapture(event.payload);
+      }).then((fn) => {
+        if (alive) unlisteners.push(fn);
+        else fn();
+      });
+    }
     const keydown = (e: KeyboardEvent) => {
       if (
         mode === "ready" &&
@@ -251,8 +321,28 @@
         e.key.toLowerCase() === "k"
       ) {
         e.preventDefault();
-        navigate("Home");
-        queueMicrotask(() => captureInput?.focus());
+        void openQuickCapture();
+      }
+      if (e.key === "Escape" && (recording || voiceBusy)) {
+        e.preventDefault();
+        stopVoice();
+      }
+      if (
+        !isTauri &&
+        !e.repeat &&
+        !e.isComposing &&
+        (e.ctrlKey || e.metaKey) &&
+        ((e.shiftKey && e.code === "Space") ||
+          (e.altKey && ["KeyV", "KeyR"].includes(e.code)))
+      ) {
+        e.preventDefault();
+        void openQuickCapture(
+          e.code === "KeyV"
+            ? "clipboard"
+            : e.code === "KeyR"
+              ? "voice"
+              : "text",
+        );
       }
     };
     const focus = () => void sync();
@@ -267,6 +357,7 @@
           snapshot = await loadSnapshot();
           config = { ...(snapshot.aiConfig ?? DEFAULT_PROVIDER) };
           settingsConfig = { ...config };
+          void refreshTools();
         }
       } catch (e) {
         error = readable(e);
@@ -276,7 +367,8 @@
     return () => {
       alive = false;
       epoch++;
-      unlisten?.();
+      stopVoice();
+      unlisteners.forEach((fn) => fn());
       window.clearInterval(timer);
       window.removeEventListener("keydown", keydown);
       window.removeEventListener("focus", focus);
@@ -303,6 +395,7 @@
       passwordConfirm = "";
       config = { ...(snapshot.aiConfig ?? DEFAULT_PROVIDER) };
       settingsConfig = { ...config };
+      void refreshTools();
     } catch (e) {
       error = readable(e);
     } finally {
@@ -325,6 +418,9 @@
     error = "";
     notice = "";
     try {
+      const current = await loadSnapshot();
+      if (token !== epoch || mode !== "ready") return;
+      snapshot = current;
       const content = await createProvider(config).parseCapture(
         capture.rawText,
         { snapshot, now: new Date().toISOString() },
@@ -354,16 +450,18 @@
     }
   }
   async function capture() {
-    if (!text.trim() || busy) return;
+    if (!text.trim() || busy || recording || voiceBusy) return;
     busy = true;
     error = "";
     const token = epoch;
     try {
       const before = new Set((snapshot.captures ?? []).map((c) => c.id));
-      const next = await beginTextCapture(text);
+      const next = await beginTextCapture(text, inputType);
       if (token !== epoch) return;
       snapshot = next;
       text = "";
+      inputType = "text";
+      quickOpen = false;
       const input = snapshot.captures?.find((c) => !before.has(c.id));
       if (!input) throw new Error("原文保存失败");
       await parseCapture(input, true);
@@ -386,8 +484,36 @@
       snapshot = next;
       const record = snapshot.proposals?.find((p) => p.id === id);
       previewId = "";
-      flash("已记住。原文也一起保留了。");
-      if (record?.entityIds[0]) openEntity(record.entityIds[0]);
+      flash("变更已应用。原文也一起保留了。");
+      const rememberedId = record?.entityIds.find((id) =>
+        snapshot.entities.some((e) => e.id === id && e.privacy !== "SECRET"),
+      );
+      if (rememberedId) openEntity(rememberedId);
+      else navigate("Memory");
+    } catch (failure) {
+      // Refresh after a rejected commit so the stale preview offers a real retry.
+      if (token === epoch) snapshot = await loadSnapshot();
+      throw failure;
+    } finally {
+      if (token === epoch) busy = false;
+    }
+  }
+  async function undoLastConfirmation() {
+    if (!lastUndo || busy || recording || voiceBusy) return;
+    const id = lastUndo.id;
+    const token = epoch;
+    busy = true;
+    error = "";
+    try {
+      const next = await undoProposal(id);
+      if (token !== epoch) return;
+      snapshot = next;
+      selectedId = "";
+      previewId = id;
+      page = "Inbox";
+      flash("已恢复确认前的记忆。这份提案回到待确认，可以修改后再保存。");
+    } catch (e) {
+      if (token === epoch) error = readable(e);
     } finally {
       if (token === epoch) busy = false;
     }
@@ -433,6 +559,7 @@
       if (token !== epoch) return;
       snapshot = next;
       config = savedConfig;
+      void warmLocalModel(config).catch(() => {});
       flash("模型设置已保存");
     } catch (e) {
       if (token === epoch) error = readable(e);
@@ -459,16 +586,18 @@
     progress = { stage: "正在准备…", completed: 0, total: 0 };
     error = "";
     const token = epoch;
+    const preparedConfig = { ...settingsConfig };
     try {
-      await prepareLocalModel();
+      await prepareLocalModel(preparedConfig.model);
       if (token !== epoch) return;
-      const next = await saveAiConfig({ ...DEFAULT_PROVIDER });
+      const next = await saveAiConfig(preparedConfig);
       if (token !== epoch) return;
       snapshot = next;
-      config = { ...DEFAULT_PROVIDER };
+      config = preparedConfig;
       settingsConfig = { ...config };
       connection = "模型已就绪";
       flash("本地模型已准备好，可以回首页记第一条了。");
+      void warmLocalModel(config).catch(() => {});
     } catch (e) {
       if (token === epoch) error = readable(e);
     } finally {
@@ -490,6 +619,189 @@
       if (token === epoch) error = readable(e);
     } finally {
       if (token === epoch) busy = false;
+    }
+  }
+  async function refreshTools() {
+    const token = epoch;
+    const results = await Promise.allSettled([
+      voiceStatus(),
+      isTauri
+        ? invoke<typeof quickStatus>("quick_capture_status")
+        : Promise.resolve(quickStatus),
+    ]);
+    if (token !== epoch || mode !== "ready") return;
+    if (results[0].status === "fulfilled") voiceInfo = results[0].value;
+    if (results[1].status === "fulfilled") quickStatus = results[1].value;
+    void warmLocalModel(config).catch(() => {});
+  }
+  async function openQuickCapture(action = "text") {
+    if (mode !== "ready") {
+      error = "先解锁记忆库，再使用快捷键记录。";
+      return;
+    }
+    if (busy || recording || voiceBusy) {
+      flash("正在处理当前记录，请稍等。");
+      return;
+    }
+    quickOpen = true;
+    await tick();
+    if (!quickOpen || mode !== "ready") return;
+    if (!quickDialog.open) quickDialog.showModal();
+    quickInput?.focus();
+    if (action === "clipboard") await pasteCapture();
+    else if (action === "voice") await microphone();
+  }
+  function closeQuickCapture() {
+    stopVoice();
+    quickOpen = false;
+  }
+  async function pasteCapture() {
+    if (busy || recording || voiceBusy) return;
+    const token = epoch;
+    try {
+      const clipboard = await readCaptureClipboard();
+      if (token !== epoch || mode !== "ready") return;
+      if (text.length + clipboard.length + (text.trim() ? 1 : 0) > 10000)
+        throw new Error("草稿加上剪贴板超过 10000 字，请先整理当前记录");
+      inputType = text.trim() ? "text" : "clipboard";
+      text = text.trim() ? `${text}\n${clipboard}` : clipboard;
+      await tick();
+      (quickOpen ? quickInput : captureInput)?.focus();
+    } catch (e) {
+      if (token === epoch) error = readable(e);
+    }
+  }
+  function stopVoice() {
+    voiceEpoch++;
+    recorder?.cancel();
+    recorder = undefined;
+    if (voiceTimer !== undefined) window.clearInterval(voiceTimer);
+    voiceTimer = undefined;
+    recording = false;
+    voiceBusy = false;
+    voiceSeconds = 0;
+    voiceLevel = 0;
+    void cancelVoice().catch(() => {});
+  }
+  async function microphone() {
+    if (recording) {
+      await finishRecording();
+      return;
+    }
+    if (busy || voiceBusy) return;
+    if (!voiceInfo.ready) {
+      closeQuickCapture();
+      navigate("Settings");
+      flash(
+        "先在「语音输入」中准备本地语音模型，再回首页开口说。Windows 的 Win H 也能直接听写到输入框。",
+      );
+      return;
+    }
+    error = "";
+    voiceBusy = true;
+    voiceLabel = "请允许使用麦克风…";
+    const token = ++voiceEpoch;
+    const session = new PcmRecorder(
+      (level) => {
+        if (token === voiceEpoch) voiceLevel = level;
+      },
+      () => {
+        if (token === voiceEpoch) void finishRecording();
+      },
+    );
+    recorder = session;
+    try {
+      await session.start();
+      if (token !== voiceEpoch || mode !== "ready") {
+        session.cancel();
+        return;
+      }
+      recording = true;
+      voiceBusy = false;
+      voiceSeconds = 0;
+      const start = performance.now();
+      voiceTimer = window.setInterval(() => {
+        voiceSeconds = Math.floor((performance.now() - start) / 1000);
+        if (voiceSeconds >= 60) void finishRecording();
+      }, 250);
+    } catch (e) {
+      if (token === voiceEpoch) {
+        stopVoice();
+        error =
+          e instanceof DOMException && e.name === "NotAllowedError"
+            ? "麦克风未获授权。请允许 Atlas 使用麦克风，或在输入框使用 Win H。"
+            : `无法开始录音：${readable(e)}`;
+      }
+    }
+  }
+  async function finishRecording() {
+    if (!recording || !recorder) return;
+    const session = recorder;
+    const token = voiceEpoch;
+    const privateToken = epoch;
+    recording = false;
+    voiceBusy = true;
+    voiceLabel = "正在本机转写…";
+    if (voiceTimer !== undefined) window.clearInterval(voiceTimer);
+    voiceTimer = undefined;
+    try {
+      const wav = await session.stop();
+      if (token !== voiceEpoch || privateToken !== epoch) {
+        wav.fill(0);
+        return;
+      }
+      const transcript = await transcribeVoice(wav, voiceLanguage);
+      if (token !== voiceEpoch || privateToken !== epoch || mode !== "ready")
+        return;
+      if (text.length + transcript.length + (text.trim() ? 1 : 0) > 10000)
+        throw new Error("转写加上草稿超过 10000 字，请分段记录");
+      inputType = text.trim() ? "text" : "voice";
+      text = text.trim() ? `${text}\n${transcript}` : transcript;
+      flash("已转成文字。核对名称和数字后，按 Ctrl Enter 整理。");
+      await tick();
+      (quickOpen ? quickInput : captureInput)?.focus();
+    } catch (e) {
+      if (token === voiceEpoch && privateToken === epoch) {
+        error = readable(e);
+        if (error.includes("运行库"))
+          voiceInfo = {
+            ...voiceInfo,
+            ready: false,
+            prerequisite: "Microsoft Visual C++ v14 x64 运行库",
+          };
+      }
+    } finally {
+      if (token === voiceEpoch) {
+        voiceBusy = false;
+        recorder = undefined;
+        voiceLevel = 0;
+      }
+    }
+  }
+  async function installVoice() {
+    if (voiceInstalling) return;
+    voiceInstalling = true;
+    error = "";
+    const token = epoch;
+    try {
+      await prepareVoice();
+      if (token === epoch) {
+        voiceInfo = await voiceStatus();
+        flash("语音已准备好。回首页点「语音」，或按 Ctrl Alt R。");
+      }
+    } catch (e) {
+      if (token === epoch) error = readable(e);
+    } finally {
+      voiceInstalling = false;
+    }
+  }
+  async function toggleQuickCapture() {
+    try {
+      quickStatus = await invoke("set_quick_capture_enabled", {
+        enabled: !quickStatus.enabled,
+      });
+    } catch (e) {
+      error = readable(e);
     }
   }
   function download(filename: string, payload: string) {
@@ -644,6 +956,13 @@
         >
       </header>
       <div class="page-content">
+        {#if lastUndo}<div class="commit-feedback" role="status">
+            <span>最近一次确认已应用 · 原文已保留</span><button
+              class="secondary"
+              disabled={busy || recording || voiceBusy}
+              on:click={undoLastConfirmation}>撤销这次变更</button
+            >
+          </div>{/if}
         {#if error}<div class="error" role="alert">
             {error}
           </div>{/if}{#if notice}<div class="notice" role="status">
@@ -657,35 +976,34 @@
             <h1>今天要告诉 Atlas 什么？</h1>
             <p>账号、项目、一次决定。说出来，让它们有迹可循。</p>
           </section>
-          <form class="capture-card" on:submit|preventDefault={capture}>
-            <label class="sr-only" for="capture">告诉 Atlas 一件事</label
-            ><textarea
-              id="capture"
-              bind:this={captureInput}
-              bind:value={text}
-              maxlength="10000"
-              placeholder="比如：Saily 是我的美国备用号码，每个月六块多，暂时保留。"
-              rows="4"
-              disabled={busy}></textarea>
-            <div class="capture-footer">
-              <span
-                ><span class="tiny-spark">✦</span> 自动整理，等你确认
-                <kbd>Ctrl K</kbd></span
-              ><button
-                class="primary"
-                disabled={busy || !text.trim()}
-                type="submit"
-                >{busy ? "正在理解…" : "帮我记住"} <span>↗</span></button
-              >
-            </div>
-          </form>
+          <CaptureComposer
+            bind:text
+            bind:input={captureInput}
+            {busy}
+            {recording}
+            {voiceBusy}
+            {voiceLabel}
+            voiceReady={voiceInfo.ready}
+            seconds={voiceSeconds}
+            level={voiceLevel}
+            submit={capture}
+            paste={pasteCapture}
+            {microphone}
+            cancelRecording={stopVoice}
+          />
+          <div class="quick-entry-hint">
+            <button class="text-button" on:click={() => openQuickCapture()}
+              >随手记录 <kbd>Ctrl Shift Space</kbd></button
+            ><span>也可以用系统听写 <kbd>Win H</kbd></span>
+          </div>
           <div class="example-row">
             <span>试着告诉它</span
             >{#each ["一个号码", "一项订阅", "一次注册"] as label, i}<button
                 class="example-chip"
-                disabled={busy}
+                disabled={busy || recording || voiceBusy}
                 on:click={() => {
                   text = samples[i];
+                  inputType = "text";
                   captureInput?.focus();
                 }}>{label} ＋</button
               >{/each}
@@ -761,9 +1079,11 @@
               record={preview}
               capture={previewCapture}
               entities={snapshot.entities}
+              {snapshot}
               {busy}
               onConfirm={confirm}
               onLater={later}
+              onRetry={() => parseCapture(previewCapture!)}
             />{:else}<div class="page-heading">
               <p class="eyebrow">YOUR WORDS, WAITING TO BECOME MEMORY</p>
               <h1>待确认</h1>
@@ -778,7 +1098,13 @@
                     <div class="section-heading">
                       <span class="pill"
                         >{proposal ? "提案已准备好" : "等待解析"}</span
-                      ><span class="muted">{date(input.timestamp)}</span>
+                      ><span class="muted"
+                        >{input.inputType === "voice"
+                          ? "语音转写 · "
+                          : input.inputType === "clipboard"
+                            ? "剪贴板 · "
+                            : ""}{date(input.timestamp)}</span
+                      >
                     </div>
                     <p>{input.rawText}</p>
                     <div class="button-row">
@@ -872,7 +1198,13 @@
                   </div>{/each}{/if}{#if sources.length}<h2>当时你说的是</h2>
                 {#each sources as source}<blockquote class="original">
                     {source.rawText}
-                    <footer>{date(source.timestamp)}</footer>
+                    <footer>
+                      {source.inputType === "voice"
+                        ? "语音转写文字 · "
+                        : source.inputType === "clipboard"
+                          ? "剪贴板文字 · "
+                          : ""}{date(source.timestamp)}
+                    </footer>
                   </blockquote>{/each}{/if}
             </article>{:else}<div class="page-heading">
               <p class="eyebrow">
@@ -959,6 +1291,7 @@
             <div class="provider-options">
               {#each [["local", "Atlas Local", "默认 · 本机私密"], ["ollama", "Ollama", "使用已有本地服务"], ["openai-compatible", "OpenAI Compatible", "自定义 URL / Key / Model"]] as [kind, title, subtitle]}<button
                   class:chosen={settingsConfig.kind === kind}
+                  disabled={modelBusy}
                   on:click={() => configure(kind as ProviderConfig["kind"])}
                   ><strong>{title}</strong><small>{subtitle}</small></button
                 >{/each}
@@ -966,15 +1299,35 @@
             {#if settingsConfig.kind === "local"}<div class="local-model">
                 <span class="model-monogram">Q</span>
                 <div>
-                  <h3>Qwen3.5 2B · Lite</h3>
+                  <h3>
+                    {selectedLocalModel.name} · {selectedLocalModel.label}
+                  </h3>
                   <p>
-                    模型约 1.9 GB。首次使用另需下载运行时约 1.5
+                    模型{selectedLocalModel.size}。首次使用另需下载运行时约 1.5
                     GB，解压后需要更多空间。
                   </p>
                   <p class="muted">
                     自动配置，关闭思考模式。输入在本机解析，下载完成后可离线使用。
                   </p>
                 </div>
+              </div>
+              <div class="model-options" aria-label="本地模型选择">
+                {#each LOCAL_MODELS as model}<button
+                    class:chosen={settingsConfig.model === model.model}
+                    disabled={modelBusy}
+                    on:click={() => {
+                      settingsConfig = {
+                        ...settingsConfig,
+                        model: model.model,
+                        responseFormat: "json_object",
+                      };
+                      connection = "";
+                    }}
+                  >
+                    <strong>{model.label}</strong><span
+                      >{model.name} · {model.size}</span
+                    ><small>{model.description}</small>
+                  </button>{/each}
               </div>
               <div class="button-row">
                 <button
@@ -983,7 +1336,7 @@
                   on:click={prepareModel}
                   >{modelBusy
                     ? "正在准备本地模型…"
-                    : "下载并准备默认模型"}</button
+                    : "下载并使用所选模型"}</button
                 ><button class="secondary" on:click={testConnection}
                   >检查模型</button
                 >
@@ -1027,9 +1380,9 @@
                     ></label
                   >
                   <p class="muted">
-                    选择远程模型后，输入原文及最多 12
-                    个相关实体的名称、类型会发送到这个地址。API Key
-                    在桌面版的加密数据库中保存。
+                    选择远程模型后，输入原文及最多 12 个相关实体的
+                    ID、名称、类型、状态会发送到这个地址。删除或解绑时还会包含相关字段名称、关联及提醒信息。
+                    已有字段值与历史原文不会发送。API Key 在桌面加密保存。
                   </p>{/if}
               </div>
               <button class="secondary" on:click={testConnection}
@@ -1044,6 +1397,100 @@
                 on:click={saveSettings}>保存模型设置</button
               >
             </div>
+          </section>
+          <section class="panel settings-panel" id="voice-settings">
+            <p class="eyebrow">TELL ATLAS</p>
+            <h2>语音输入</h2>
+            <p>Whisper Small Q5_1 · 多语言 · 本机转写</p>
+            <p class="muted">
+              首次下载约 190 MB 模型和 9 MB
+              运行时。说完会回到可编辑文字，再由当前模型整理成提案。Atlas
+              的录音不会加入记忆或发送到云端。
+            </p>
+            <div class="button-row">
+              <button
+                class="primary"
+                disabled={!voiceInfo.supported || voiceInstalling}
+                on:click={installVoice}
+              >
+                {voiceInstalling
+                  ? "正在准备语音…"
+                  : voiceInfo.ready
+                    ? "语音已就绪"
+                    : "下载并准备语音模型"}</button
+              >
+              <label class="voice-language"
+                >转写语言<select bind:value={voiceLanguage}
+                  ><option value="auto">自动识别</option><option value="zh"
+                    >中文</option
+                  ><option value="en">English</option><option value="ja"
+                    >日本語</option
+                  ></select
+                ></label
+              >
+            </div>
+            {#if voiceInfo.prerequisite}<p class="muted">
+                需要先安装 {voiceInfo.prerequisite}。
+              </p>
+              <div class="button-row">
+                <button
+                  class="secondary"
+                  on:click={() =>
+                    invoke("open_voice_prerequisite").catch(
+                      (e) => (error = readable(e)),
+                    )}>打开 Microsoft 官方下载</button
+                ><button class="secondary" on:click={refreshTools}
+                  >已安装，重新检查</button
+                >
+              </div>{/if}
+            {#if voiceInstalling}<p class="muted" role="status">
+                {voiceProgress.stage}{voiceProgress.total
+                  ? ` · ${Math.round((voiceProgress.completed / voiceProgress.total) * 100)}%`
+                  : ""}
+              </p>
+              {#if voiceProgress.total}<progress
+                  value={voiceProgress.completed}
+                  max={voiceProgress.total}
+                ></progress>{/if}{/if}
+            {#if !voiceInfo.supported}<p class="muted">
+                Atlas 录音转写目前在 Windows x64
+                桌面版使用。输入框也可搭配操作系统听写；Windows 为 Win H。
+              </p>{/if}
+            <p class="muted">
+              如果记忆模型使用远程服务，点击「帮我记住」后会发送转写文字；语音转写本身始终在本机运行。
+            </p>
+          </section>
+          <section class="panel settings-panel">
+            <p class="eyebrow">A THOUGHT, ONE SHORTCUT AWAY</p>
+            <h2>快捷记录</h2>
+            <div class="shortcut-list">
+              <div>
+                <kbd>Ctrl / ⌘ Shift Space</kbd><span>唤起快速输入</span>
+              </div>
+              <div>
+                <kbd>Ctrl / ⌘ Alt V</kbd><span>唤起并读取剪贴板文字</span>
+              </div>
+              <div><kbd>Ctrl / ⌘ Alt R</kbd><span>唤起并开始语音</span></div>
+              <div><kbd>Ctrl / ⌘ Enter</kbd><span>整理当前输入</span></div>
+              <div><kbd>Esc</kbd><span>取消录音或关闭快速输入</span></div>
+            </div>
+            {#if isTauri}<button class="secondary" on:click={toggleQuickCapture}
+                >{quickStatus.enabled
+                  ? "关闭全局快捷键"
+                  : "启用全局快捷键"}</button
+              >
+              {#each quickStatus.shortcuts.filter((shortcut) => quickStatus.enabled && !shortcut.registered) as shortcut}<p
+                  class="muted"
+                >
+                  {shortcut.key} 未能注册，可能被其他应用占用。仍可点击首页入口。
+                </p>{/each}
+            {:else}<p class="muted">
+                浏览器预览中，快捷键在当前页面内有效。桌面版运行时支持全局唤起；关闭
+                Atlas 后不生效。
+              </p>{/if}
+            <p class="muted">
+              剪贴板只在你按快捷键或点击「粘贴」时读取。锁定时先解锁，再开始记录。
+            </p>
           </section>
           <section class="panel settings-panel">
             <h2>记忆与备份</h2>
@@ -1094,4 +1541,46 @@
       </div>
     </main>
   </div>
+  {#if quickOpen}
+    <dialog
+      class="quick-dialog"
+      bind:this={quickDialog}
+      on:cancel|preventDefault={closeQuickCapture}
+      aria-labelledby="quick-capture-title"
+    >
+      <div class="quick-dialog-heading">
+        <div>
+          <p class="eyebrow">TELL ATLAS. IT REMEMBERS.</p>
+          <h2 id="quick-capture-title">随手记下一件事</h2>
+        </div>
+        <button
+          class="icon-button"
+          aria-label="关闭快速输入"
+          on:click={closeQuickCapture}>×</button
+        >
+      </div>
+      {#if error}<div class="error" role="alert">{error}</div>{/if}
+      {#if notice}<p class="muted" role="status">{notice}</p>{/if}
+      <CaptureComposer
+        id="quick-capture"
+        compact
+        bind:text
+        bind:input={quickInput}
+        {busy}
+        {recording}
+        {voiceBusy}
+        {voiceLabel}
+        voiceReady={voiceInfo.ready}
+        seconds={voiceSeconds}
+        level={voiceLevel}
+        submit={capture}
+        paste={pasteCapture}
+        {microphone}
+        cancelRecording={stopVoice}
+      />
+      <p class="quick-dialog-note">
+        无需选择类型。关闭窗口后，未提交的文字仍在本次草稿里。
+      </p>
+    </dialog>
+  {/if}
 {/if}

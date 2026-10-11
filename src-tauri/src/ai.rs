@@ -10,7 +10,8 @@ use std::{
 };
 
 pub const LOCAL_URL: &str = "http://127.0.0.1:11435";
-pub const DEFAULT_MODEL: &str = "qwen3.5:2b-q4_K_M";
+pub const DEFAULT_MODEL: &str = "qwen3.5:4b-q4_K_M";
+pub const LOCAL_MODELS: &[&str] = &["qwen3.5:2b-q4_K_M", DEFAULT_MODEL];
 #[cfg(all(windows, target_arch = "x86_64"))]
 const RUNTIME_URL: &str =
     "https://github.com/ollama/ollama/releases/download/v0.35.0/ollama-windows-amd64.zip";
@@ -41,7 +42,7 @@ impl Default for AiConfig {
             base_url: LOCAL_URL.into(),
             model: DEFAULT_MODEL.into(),
             api_key: String::new(),
-            response_format: "json_schema".into(),
+            response_format: "json_object".into(),
         }
     }
 }
@@ -71,10 +72,10 @@ impl AiConfig {
         }
         if self.kind == "local"
             && (self.base_url.trim_end_matches('/') != LOCAL_URL
-                || self.model != DEFAULT_MODEL
+                || !LOCAL_MODELS.contains(&self.model.as_str())
                 || !self.api_key.is_empty())
         {
-            return Err("Atlas Local 使用固定本机地址和默认模型".into());
+            return Err("Atlas Local 使用固定本机地址和已支持的小模型".into());
         }
         Ok(())
     }
@@ -171,11 +172,22 @@ pub fn chat(request: &ChatRequest) -> Result<String> {
     let config = &request.config;
     let ollama = config.kind != "openai-compatible";
     let mut body = if ollama {
-        json!({"model":config.model,"messages":request.messages,"format":request.schema,"stream":false,"think":false,"keep_alive":"2m","options":{"temperature":0,"seed":42,"num_ctx":4096,"num_predict":1536,"num_thread":4,"repeat_penalty":1.0,"presence_penalty":0}})
+        json!({"model":config.model,"messages":request.messages,"stream":false,"think":false,"keep_alive":"10m","options":{"temperature":0,"seed":42,"num_ctx":4096,"num_predict":1536,"num_thread":cpu_threads(),"repeat_penalty":1.0,"presence_penalty":0}})
     } else {
         json!({"model":config.model,"messages":request.messages,"temperature":0.1,"max_tokens":3072,"stream":false})
     };
-    if !ollama {
+    if ollama {
+        let format = if config.kind == "local" {
+            "json_object"
+        } else {
+            config.response_format.as_str()
+        };
+        match format {
+            "json_schema" => body["format"] = request.schema.clone(),
+            "json_object" => body["format"] = json!("json"),
+            _ => {}
+        }
+    } else {
         match config.response_format.as_str() {
             "json_schema" => {
                 body["response_format"] = json!({"type":"json_schema","json_schema":{"name":"atlas_proposal","strict":false,"schema":request.schema}});
@@ -260,7 +272,7 @@ impl LocalRuntime {
             .env("OLLAMA_NO_CLOUD", "1")
             .env("OLLAMA_NUM_PARALLEL", "1")
             .env("OLLAMA_MAX_LOADED_MODELS", "1")
-            .env("OLLAMA_KEEP_ALIVE", "2m")
+            .env("OLLAMA_KEEP_ALIVE", "10m")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -298,7 +310,17 @@ impl LocalRuntime {
         self.child = None;
         Err("本地模型启动超时".into())
     }
-    pub fn prepare(&mut self, app_dir: &Path, progress: impl Fn(ModelProgress)) -> Result<()> {
+    pub fn prepare(
+        &mut self,
+        app_dir: &Path,
+        model: &str,
+        progress: impl Fn(ModelProgress),
+    ) -> Result<()> {
+        let config = AiConfig {
+            model: model.into(),
+            ..AiConfig::default()
+        };
+        config.validate()?;
         if !runtime_executable(app_dir).exists() {
             download_runtime(app_dir, &progress)?;
         }
@@ -308,7 +330,7 @@ impl LocalRuntime {
             total: 0,
         });
         self.start(app_dir)?;
-        if health(&AiConfig::default())? {
+        if health(&config)? {
             progress(ModelProgress {
                 stage: "模型已就绪".into(),
                 completed: 1,
@@ -318,7 +340,7 @@ impl LocalRuntime {
         }
         let response = client(3600)?
             .post(format!("{LOCAL_URL}/api/pull"))
-            .json(&json!({"model":DEFAULT_MODEL,"stream":true}))
+            .json(&json!({"model":model,"stream":true}))
             .send()
             .map_err(|_| "模型下载连接失败，可以稍后重试")?;
         if !response.status().is_success() {
@@ -348,7 +370,7 @@ impl LocalRuntime {
                 total: value["total"].as_u64().unwrap_or(0),
             });
         }
-        if !health(&AiConfig::default())? {
+        if !health(&config)? {
             return Err("默认模型下载未完成，请重试".into());
         }
         progress(ModelProgress {
@@ -358,6 +380,24 @@ impl LocalRuntime {
         });
         Ok(())
     }
+}
+
+pub fn cpu_threads() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .clamp(1, 8)
+}
+
+pub fn warm(config: &AiConfig) -> Result<()> {
+    config.validate()?;
+    if config.kind != "local" || !health(config)? {
+        return Ok(());
+    }
+    bounded_json(client(90)?.post(format!("{LOCAL_URL}/api/generate"))
+        .json(&json!({"model":config.model,"stream":false,"keep_alive":"10m","options":{"num_ctx":4096,"num_thread":cpu_threads()}}))
+        .send().map_err(|_| "模型预热失败")?)?;
+    Ok(())
 }
 fn runtime_executable(app_dir: &Path) -> PathBuf {
     app_dir
@@ -479,6 +519,20 @@ mod tests {
     #[test]
     fn remote_credentials_require_https_and_local_is_fixed() {
         assert!(AiConfig::default().validate().is_ok());
+        for model in LOCAL_MODELS {
+            assert!(AiConfig {
+                model: (*model).into(),
+                ..AiConfig::default()
+            }
+            .validate()
+            .is_ok());
+        }
+        assert!(AiConfig {
+            model: "qwen3.5:0.8b".into(),
+            ..AiConfig::default()
+        }
+        .validate()
+        .is_err());
         let mut c = AiConfig::default();
         c.base_url = "http://example.com".into();
         assert!(c.validate().is_err());

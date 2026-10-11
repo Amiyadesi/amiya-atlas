@@ -44,6 +44,8 @@ pub struct ProposedEntity {
     pub attributes: BTreeMap<String, Value>,
     pub notes: String,
     pub evidence: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attributes_to_remove: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -68,6 +70,14 @@ pub struct ProposedEvent {
     pub note: String,
     pub evidence: String,
 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProposedRemoval {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_updated_at: Option<String>,
+    pub evidence: String,
+}
 #[derive(Clone, Default, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Proposal {
@@ -76,6 +86,26 @@ pub struct Proposal {
     pub relations_to_create: Vec<ProposedRelation>,
     pub events_to_create: Vec<ProposedEvent>,
     pub uncertainty: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entities_to_delete: Vec<ProposedRemoval>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relations_to_delete: Vec<ProposedRemoval>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events_to_delete: Vec<ProposedRemoval>,
+}
+#[derive(Clone, Default, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChangeRecords {
+    pub entities: Vec<Entity>,
+    pub relations: Vec<Relation>,
+    pub events: Vec<Event>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProposalUndo {
+    pub applied_revision: u64,
+    pub before: ChangeRecords,
+    pub after: ChangeRecords,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -87,6 +117,10 @@ pub struct ProposalRecord {
     pub provider: String,
     pub created_at: String,
     pub entity_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undo: Option<ProposalUndo>,
 }
 
 fn nonempty(value: &str, max: usize) -> Result<()> {
@@ -150,7 +184,7 @@ pub fn validate_records(snapshot: &Snapshot) -> Result<()> {
         nonempty(&capture.raw_text, 10000)?;
         domain::date(&capture.timestamp)?;
         if !ids.insert(&capture.id)
-            || capture.input_type != "text"
+            || !["text", "clipboard", "voice"].contains(&capture.input_type.as_str())
             || !["PENDING", "CONFIRMED", "DISMISSED"].contains(&capture.status.as_str())
         {
             return Err("无效捕获记录".into());
@@ -174,8 +208,520 @@ pub fn validate_records(snapshot: &Snapshot) -> Result<()> {
         {
             return Err("提案内容过长".into());
         }
+        if proposal.undo.as_ref().is_some_and(|undo| {
+            serde_json::to_vec(undo).map_or(true, |bytes| bytes.len() > 512 * 1024)
+        }) {
+            return Err("变更过大，无法保留撤销记录，请拆分输入".into());
+        }
     }
     Ok(())
+}
+
+fn clauses(text: &str) -> impl Iterator<Item = &str> {
+    text.split(['，', ',', '。', '!', '！', '?', '？', ';', '；', '\n'])
+}
+fn has_delete_intent(text: &str) -> bool {
+    clauses(text).any(|part| {
+        let part = part.to_lowercase().replace('’', "'");
+        let compact = part.split_whitespace().collect::<String>();
+        [
+            "删除", "删掉", "删去", "移除", "忘掉", "delete", "remove", "forget",
+        ]
+        .iter()
+        .any(|word| part.contains(word))
+            && ![
+                "不要删",
+                "别删",
+                "不能删",
+                "不想删",
+                "不用删",
+                "不要移除",
+                "不要忘",
+                "do not delete",
+                "don't delete",
+                "never delete",
+                "do not remove",
+                "don't remove",
+                "never remove",
+                "do not forget",
+                "don't forget",
+                "never forget",
+            ]
+            .iter()
+            .any(|word| part.contains(word))
+            && ![
+                "不要", "别", "不能", "不想", "不用", "请勿", "勿", "不", "暂不", "先不",
+            ]
+            .iter()
+            .any(|prefix| {
+                ["删除", "删掉", "删去", "删", "移除", "忘掉", "忘"]
+                    .iter()
+                    .any(|verb| compact.contains(&format!("{prefix}{verb}")))
+            })
+    })
+}
+fn has_removal_intent(text: &str) -> bool {
+    let text = text.to_lowercase();
+    has_delete_intent(&text)
+        || [
+            "解绑",
+            "解除",
+            "去掉",
+            "清空",
+            "不再绑定",
+            "不再关联",
+            "unlink",
+            "disconnect",
+        ]
+        .iter()
+        .any(|word| text.contains(word))
+        || (text.contains("取消") && text.contains("提醒"))
+}
+fn explicit_entity_deletion(raw: &str, entity: &Entity, current: &Snapshot) -> bool {
+    let name = normalized(&entity.name);
+    clauses(raw).any(|part| {
+        let part = part.to_lowercase();
+        if !has_delete_intent(&part) {
+            return false;
+        }
+        let scoped = [
+            "属性",
+            "字段",
+            "月费",
+            "费用",
+            "备注",
+            "提醒",
+            "关联",
+            "关系",
+            "绑定",
+            "field",
+            "attribute",
+            "reminder",
+            "event",
+            "relation",
+            "link",
+        ]
+        .iter()
+        .any(|word| part.contains(word));
+        let entire = [
+            "整条",
+            "整个",
+            "连同",
+            "及其",
+            "和它的",
+            "以及它的",
+            "entire",
+            "including",
+        ]
+        .iter()
+        .any(|word| part.contains(word));
+        if scoped && !entire {
+            return false;
+        }
+        if part.contains(&name) {
+            return current
+                .entities
+                .iter()
+                .filter(|e| e.privacy != "SECRET" && normalized(&e.name) == name)
+                .count()
+                == 1;
+        }
+        name.split(|c: char| !c.is_alphanumeric())
+            .filter(|token| token.chars().count() >= 3)
+            .any(|token| {
+                part.contains(token)
+                    && current
+                        .entities
+                        .iter()
+                        .filter(|e| e.privacy != "SECRET" && normalized(&e.name).contains(token))
+                        .count()
+                        == 1
+            })
+    })
+}
+fn removal_mentions(raw: &str, entity: &Entity) -> bool {
+    let name = normalized(&entity.name);
+    clauses(raw).any(|part| {
+        let part = part.to_lowercase();
+        has_removal_intent(&part)
+            && (part.contains(&name)
+                || name
+                    .split(|c: char| !c.is_alphanumeric())
+                    .filter(|token| token.chars().count() >= 3)
+                    .any(|token| part.contains(token)))
+    })
+}
+#[derive(Default)]
+pub struct RemovalTargets {
+    pub entities: HashSet<String>,
+    pub relations: HashSet<String>,
+    pub events: HashSet<String>,
+}
+fn validate_removals(
+    current: &Snapshot,
+    capture: &Capture,
+    proposal: &Proposal,
+) -> Result<RemovalTargets> {
+    let mut targets = RemovalTargets::default();
+    let visible = |id: &str| {
+        current
+            .entities
+            .iter()
+            .any(|e| e.id == id && e.privacy != "SECRET")
+    };
+    for item in &proposal.entities_to_delete {
+        evidence(&item.evidence, &capture.raw_text)?;
+        nonempty(&item.id, 200)?;
+        let entity = current
+            .entities
+            .iter()
+            .find(|e| e.id == item.id && e.privacy != "SECRET")
+            .ok_or("待删除记忆不存在或不可访问")?;
+        if !explicit_entity_deletion(&capture.raw_text, entity, current) {
+            return Err("停用不等于删除；请明确说出要删除的记忆名称".into());
+        }
+        if entity.updated_at.as_str()
+            != item
+                .expected_updated_at
+                .as_deref()
+                .ok_or("删除缺少版本信息，请重新解析")?
+        {
+            return Err("待删除记忆已变化，请重新解析".into());
+        }
+        if !targets.entities.insert(item.id.clone())
+            || proposal
+                .entities_to_update
+                .iter()
+                .any(|e| e.id.as_ref() == Some(&item.id))
+        {
+            return Err("重复删除，或同一记忆同时修改和删除".into());
+        }
+        if entity.fields.iter().any(|f| f.privacy == "SECRET") {
+            return Err("这项记忆含秘密字段，请手动处理，或选择停用保留".into());
+        }
+    }
+    if (!proposal.relations_to_delete.is_empty() || !proposal.events_to_delete.is_empty())
+        && !has_removal_intent(&capture.raw_text)
+    {
+        return Err("解除关联或移除提醒需要原文依据".into());
+    }
+    for item in &proposal.relations_to_delete {
+        evidence(&item.evidence, &capture.raw_text)?;
+        let relation = current
+            .relations
+            .iter()
+            .find(|r| {
+                r.id == item.id
+                    && r.privacy != "SECRET"
+                    && visible(&r.source_id)
+                    && visible(&r.target_id)
+            })
+            .ok_or("待删除关联不存在或不可访问")?;
+        for id in [&relation.source_id, &relation.target_id] {
+            if !removal_mentions(
+                &capture.raw_text,
+                current.entities.iter().find(|e| &e.id == id).unwrap(),
+            ) {
+                return Err("解除关联的对象不明确，请补充两端名称".into());
+            }
+        }
+        if !targets.relations.insert(item.id.clone())
+            || proposal.relations_to_create.iter().any(|r| {
+                r.from == relation.source_id
+                    && r.to == relation.target_id
+                    && r.kind == relation.kind
+            })
+        {
+            return Err("重复或互相冲突的关联操作".into());
+        }
+    }
+    for item in &proposal.events_to_delete {
+        evidence(&item.evidence, &capture.raw_text)?;
+        let event = current
+            .events
+            .iter()
+            .find(|e| e.id == item.id && visible(&e.entity_id))
+            .ok_or("待删除事件不存在或不可访问")?;
+        if !removal_mentions(
+            &capture.raw_text,
+            current
+                .entities
+                .iter()
+                .find(|e| e.id == event.entity_id)
+                .unwrap(),
+        ) {
+            return Err("待删除提醒的对象不明确，请补充名称".into());
+        }
+        if !targets.events.insert(item.id.clone())
+            || proposal.events_to_create.iter().any(|e| {
+                e.entity_ref == event.entity_id
+                    && e.kind == event.kind
+                    && e.due_at == event.due_at.as_deref().unwrap_or("")
+                    && event.policy.as_deref() == Some(&e.policy)
+            })
+        {
+            return Err("重复或互相冲突的事件操作".into());
+        }
+    }
+    for relation in &current.relations {
+        if targets.entities.contains(&relation.source_id)
+            || targets.entities.contains(&relation.target_id)
+        {
+            if relation.privacy == "SECRET"
+                || !visible(&relation.source_id)
+                || !visible(&relation.target_id)
+            {
+                return Err("此删除涉及隐藏关联，请先手动处理，或选择停用保留".into());
+            }
+            targets.relations.insert(relation.id.clone());
+        }
+    }
+    for event in &current.events {
+        if targets.entities.contains(&event.entity_id) {
+            targets.events.insert(event.id.clone());
+        }
+    }
+    Ok(targets)
+}
+
+pub fn stage_versions(current: &Snapshot, proposal: &mut Proposal) -> Result<()> {
+    for item in &mut proposal.entities_to_update {
+        let entity = current
+            .entities
+            .iter()
+            .find(|e| Some(&e.id) == item.id.as_ref() && e.privacy != "SECRET")
+            .ok_or("待更新实体不存在")?;
+        if item
+            .expected_updated_at
+            .as_ref()
+            .is_some_and(|version| version != &entity.updated_at)
+        {
+            return Err("记忆已变化，请重新解析".into());
+        }
+        item.expected_updated_at = Some(entity.updated_at.clone());
+    }
+    for item in &mut proposal.entities_to_delete {
+        let entity = current
+            .entities
+            .iter()
+            .find(|e| e.id == item.id && e.privacy != "SECRET")
+            .ok_or("待删除实体不存在")?;
+        if item
+            .expected_updated_at
+            .as_ref()
+            .is_some_and(|version| version != &entity.updated_at)
+        {
+            return Err("待删除记忆已变化，请重新解析".into());
+        }
+        item.expected_updated_at = Some(entity.updated_at.clone());
+    }
+    Ok(())
+}
+pub fn guard_staged(current: &Snapshot, record: &ProposalRecord, content: &Proposal) -> Result<()> {
+    let destructive = !content.entities_to_delete.is_empty()
+        || !content.relations_to_delete.is_empty()
+        || !content.events_to_delete.is_empty()
+        || content
+            .entities_to_update
+            .iter()
+            .any(|e| !e.attributes_to_remove.is_empty());
+    if destructive && record.base_revision != Some(current.revision) {
+        return Err("记忆库已变化，请重新解析后确认删除".into());
+    }
+    for item in &content.entities_to_update {
+        let staged = record
+            .content
+            .entities_to_update
+            .iter()
+            .find(|e| e.id == item.id)
+            .ok_or("修改目标已变化，请重新解析")?;
+        if item.expected_updated_at != staged.expected_updated_at {
+            return Err("提案版本已变化，请重新解析".into());
+        }
+    }
+    for (items, staged) in [
+        (
+            &content.entities_to_delete,
+            &record.content.entities_to_delete,
+        ),
+        (
+            &content.relations_to_delete,
+            &record.content.relations_to_delete,
+        ),
+        (&content.events_to_delete, &record.content.events_to_delete),
+    ] {
+        for item in items {
+            if !staged
+                .iter()
+                .any(|e| e.id == item.id && e.expected_updated_at == item.expected_updated_at)
+            {
+                return Err("删除目标或版本已变化，请重新解析".into());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn changed_records<T: Serialize + Clone>(
+    before: &[T],
+    after: &[T],
+    id: impl Fn(&T) -> &str,
+) -> Result<(Vec<T>, Vec<T>)> {
+    let serialized = |items: &[T]| -> Result<HashMap<String, Value>> {
+        items
+            .iter()
+            .map(|item| {
+                Ok((
+                    id(item).into(),
+                    serde_json::to_value(item).map_err(|_| "变更记录编码失败")?,
+                ))
+            })
+            .collect()
+    };
+    let old = serialized(before)?;
+    let new = serialized(after)?;
+    Ok((
+        before
+            .iter()
+            .filter(|item| old.get(id(item)) != new.get(id(item)))
+            .cloned()
+            .collect(),
+        after
+            .iter()
+            .filter(|item| old.get(id(item)) != new.get(id(item)))
+            .cloned()
+            .collect(),
+    ))
+}
+pub fn confirm(
+    current: &Snapshot,
+    proposal_id: &str,
+    content: &Proposal,
+) -> Result<(Snapshot, Vec<String>)> {
+    let record = current
+        .proposals
+        .iter()
+        .find(|p| p.id == proposal_id)
+        .ok_or("提案不存在")?;
+    if record.status == "CONFIRMED" {
+        return Ok((current.clone(), vec![]));
+    }
+    if record.status != "PENDING" {
+        return Err("提案已撤回".into());
+    }
+    guard_staged(current, record, content)?;
+    let input = current
+        .captures
+        .iter()
+        .find(|c| c.id == record.capture_id && c.status == "PENDING")
+        .ok_or("原文已处理")?;
+    let (mut next, ids) = apply_proposal(current, input, content)?;
+    let (before_entities, after_entities) =
+        changed_records(&current.entities, &next.entities, |e| &e.id)?;
+    let (before_relations, after_relations) =
+        changed_records(&current.relations, &next.relations, |r| &r.id)?;
+    let (before_events, after_events) = changed_records(&current.events, &next.events, |e| &e.id)?;
+    let undo = ProposalUndo {
+        applied_revision: current.revision + 1,
+        before: ChangeRecords {
+            entities: before_entities,
+            relations: before_relations,
+            events: before_events,
+        },
+        after: ChangeRecords {
+            entities: after_entities,
+            relations: after_relations,
+            events: after_events,
+        },
+    };
+    for proposal in &mut next.proposals {
+        proposal.undo = None;
+    }
+    let proposal = next
+        .proposals
+        .iter_mut()
+        .find(|p| p.id == proposal_id)
+        .unwrap();
+    proposal.status = "CONFIRMED".into();
+    proposal.content = content.clone();
+    proposal.entity_ids = ids;
+    proposal.undo = Some(undo);
+    next.captures
+        .iter_mut()
+        .find(|c| c.id == record.capture_id)
+        .unwrap()
+        .status = "CONFIRMED".into();
+    next.validate()?;
+    Ok((
+        next,
+        content
+            .entities_to_delete
+            .iter()
+            .map(|e| e.id.clone())
+            .collect(),
+    ))
+}
+pub fn undo(current: &Snapshot, proposal_id: &str) -> Result<(Snapshot, Vec<String>)> {
+    let record = current
+        .proposals
+        .iter()
+        .find(|p| p.id == proposal_id && p.status == "CONFIRMED")
+        .ok_or("这次变更不能撤销")?;
+    let undo = record.undo.as_ref().ok_or("这次变更不能撤销")?;
+    if undo.applied_revision != current.revision {
+        return Err("记忆库已有新的操作，不能覆盖后续变更；请用新提案修正".into());
+    }
+    let mut next = current.clone();
+    let entity_ids: HashSet<_> = undo
+        .before
+        .entities
+        .iter()
+        .chain(&undo.after.entities)
+        .map(|e| &e.id)
+        .collect();
+    let relation_ids: HashSet<_> = undo
+        .before
+        .relations
+        .iter()
+        .chain(&undo.after.relations)
+        .map(|r| &r.id)
+        .collect();
+    let event_ids: HashSet<_> = undo
+        .before
+        .events
+        .iter()
+        .chain(&undo.after.events)
+        .map(|e| &e.id)
+        .collect();
+    next.entities.retain(|e| !entity_ids.contains(&e.id));
+    next.entities.extend(undo.before.entities.clone());
+    next.relations.retain(|r| !relation_ids.contains(&r.id));
+    next.relations.extend(undo.before.relations.clone());
+    next.events.retain(|e| !event_ids.contains(&e.id));
+    next.events.extend(undo.before.events.clone());
+    let proposal = next
+        .proposals
+        .iter_mut()
+        .find(|p| p.id == proposal_id)
+        .unwrap();
+    proposal.status = "PENDING".into();
+    proposal.entity_ids.clear();
+    proposal.undo = None;
+    proposal.base_revision = Some(current.revision + 1);
+    next.captures
+        .iter_mut()
+        .find(|c| c.id == record.capture_id)
+        .ok_or("原文缺失")?
+        .status = "PENDING".into();
+    next.validate()?;
+    let removed = undo
+        .after
+        .entities
+        .iter()
+        .filter(|e| !next.entities.iter().any(|old| old.id == e.id))
+        .map(|e| e.id.clone())
+        .collect();
+    Ok((next, removed))
 }
 
 /** Pure transformation. Parsing/staging calls it for validation only; the confirm command owns the write. */
@@ -189,6 +735,9 @@ pub fn apply_proposal(
         || proposal.relations_to_create.len() > 50
         || proposal.events_to_create.len() > 30
         || proposal.uncertainty.len() > 30
+        || proposal.entities_to_delete.len() > 20
+        || proposal.relations_to_delete.len() > 50
+        || proposal.events_to_delete.len() > 30
     {
         return Err("提案过大，请拆分输入".into());
     }
@@ -196,17 +745,40 @@ pub fn apply_proposal(
         && proposal.entities_to_update.is_empty()
         && proposal.relations_to_create.is_empty()
         && proposal.events_to_create.is_empty()
+        && proposal.entities_to_delete.is_empty()
+        && proposal.relations_to_delete.is_empty()
+        && proposal.events_to_delete.is_empty()
     {
         return Err("提案没有可保存的记忆".into());
     }
     let mut next = current.clone();
+    let removals = validate_removals(current, capture, proposal)?;
+    next.entities.retain(|e| !removals.entities.contains(&e.id));
+    next.relations
+        .retain(|r| !removals.relations.contains(&r.id));
+    next.events.retain(|e| !removals.events.contains(&e.id));
     let mut refs: HashMap<String, String> = current
         .entities
         .iter()
-        .filter(|e| e.privacy != "SECRET")
+        .filter(|e| e.privacy != "SECRET" && !removals.entities.contains(&e.id))
         .map(|e| (e.id.clone(), e.id.clone()))
         .collect();
-    let mut changed = HashSet::new();
+    let mut changed = removals.entities.clone();
+    for relation in current
+        .relations
+        .iter()
+        .filter(|r| removals.relations.contains(&r.id))
+    {
+        changed.insert(relation.source_id.clone());
+        changed.insert(relation.target_id.clone());
+    }
+    for event in current
+        .events
+        .iter()
+        .filter(|e| removals.events.contains(&e.id))
+    {
+        changed.insert(event.entity_id.clone());
+    }
     let mut names = HashSet::new();
     let timestamp = domain::now();
     for item in &proposal.entities_to_create {
@@ -347,12 +919,42 @@ fn patch_entity(entity: &mut Entity, item: &ProposedEntity, capture: &Capture) -
     {
         return Err("实体类型或属性无效".into());
     }
-    entity.name = item.name.trim().into();
     // Preserve legacy categories/template IDs for matched records.
     if item.id.is_some() && canonical_type(&entity.category) != item.kind {
         return Err("更新不可静默改变实体类型，请修改提案或重新说明".into());
     }
     entity.status = item.status.clone();
+    if item.attributes_to_remove.len() > 50 {
+        return Err("待删除属性过多".into());
+    }
+    if !item.attributes_to_remove.is_empty() {
+        if item.id.is_none() || !has_removal_intent(&capture.raw_text) {
+            return Err("只有明确提出的已有属性才能删除".into());
+        }
+        if !removal_mentions(&capture.raw_text, entity) {
+            return Err("待删除属性的对象不明确，请补充名称".into());
+        }
+        let mut keys = HashSet::new();
+        for key in &item.attributes_to_remove {
+            nonempty(key, 100)?;
+            let field = entity
+                .fields
+                .iter()
+                .find(|f| &f.key == key)
+                .ok_or("待删除属性不存在")?;
+            if field.privacy == "SECRET"
+                || !keys.insert(key)
+                || item.attributes.contains_key(key)
+                || (key == "notes" && !item.notes.is_empty())
+            {
+                return Err("待删除属性重复、不可访问或与修改冲突".into());
+            }
+        }
+        entity
+            .fields
+            .retain(|f| !item.attributes_to_remove.contains(&f.key));
+    }
+    entity.name = item.name.trim().into();
     let mut attributes = item.attributes.clone();
     if !item.notes.is_empty() {
         let old_note = entity

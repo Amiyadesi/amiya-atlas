@@ -44,6 +44,7 @@ test("capture proposal can be corrected, saved, searched and explored; failed pa
   await expect(
     page.getByRole("heading", { name: "我理解的是……" }),
   ).toBeVisible();
+  await page.getByText("修改提案", { exact: true }).click();
   await page.getByLabel("Atlas test number monthly_cost").fill("not a number");
   await expect(page.getByRole("button", { name: "确认保存" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "稍后确认" })).toBeDisabled();
@@ -59,6 +60,7 @@ test("capture proposal can be corrected, saved, searched and explored; failed pa
   ).toBeVisible();
   await page.getByRole("button", { name: "待确认 Inbox" }).click();
   await page.getByRole("button", { name: "检查并确认" }).click();
+  await page.getByText("修改提案", { exact: true }).click();
   await expect(page.getByLabel("Atlas test number monthly_cost")).toHaveValue(
     "7",
   );
@@ -107,6 +109,91 @@ test("one-hop graph filters and narrow layout remain usable", async ({
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+});
+
+test("quick capture keeps the draft, reads clipboard on demand, and submits only a proposal", async ({
+  page,
+  context,
+}) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  let calls = 0;
+  await page.route("http://127.0.0.1:11435/api/chat", (route) => {
+    calls++;
+    return route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ message: { content: JSON.stringify(proposal) } }),
+      headers: { "Access-Control-Allow-Origin": "*" },
+    });
+  });
+  await page.goto("/");
+  await page.getByLabel("告诉 Atlas 一件事").fill("还没说完的草稿");
+  await page.keyboard.press("Control+Shift+Space");
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByLabel("告诉 Atlas 一件事")).toHaveValue(
+    "还没说完的草稿",
+  );
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByLabel("告诉 Atlas 一件事")).toHaveValue(
+    "还没说完的草稿",
+  );
+  expect(calls).toBe(0);
+  await page.getByLabel("告诉 Atlas 一件事").fill("");
+  await page.evaluate((text) => navigator.clipboard.writeText(text), raw);
+  await page.keyboard.press("Control+Alt+V");
+  await expect(dialog.getByLabel("告诉 Atlas 一件事")).toHaveValue(raw);
+  expect(calls).toBe(0);
+  await page.screenshot({
+    path: "qa-artifacts/quick-capture.png",
+    fullPage: true,
+  });
+  await page.keyboard.press("Control+Enter");
+  await expect(dialog).toHaveCount(0);
+  await expect(
+    page.getByRole("heading", { name: "我理解的是……" }),
+  ).toBeVisible();
+  expect(calls).toBe(1);
+  await page.getByRole("button", { name: "记忆 Memory" }).click();
+  await page
+    .getByRole("textbox", { name: "搜索记忆" })
+    .fill("Atlas test number");
+  await expect(
+    page.getByText("没有找到相关记忆。", { exact: false }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "锁定记忆库" }).click();
+  await page.keyboard.press("Control+Alt+R");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.getByRole("alert")).toContainText("先解锁");
+});
+
+test("model profiles and browser voice availability are clear", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "设置 Settings" }).click();
+  await expect(page.getByRole("button", { name: /均衡 · 推荐/ })).toHaveClass(
+    /chosen/,
+  );
+  await page.getByRole("button", { name: /轻量模型 Qwen3.5 2B/ }).click();
+  await page.getByRole("button", { name: "保存模型设置" }).click();
+  await expect(page.getByText("模型设置已保存")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /轻量模型 Qwen3.5 2B/ }),
+  ).toHaveClass(/chosen/);
+  await expect(
+    page.getByRole("button", { name: "下载并准备语音模型" }),
+  ).toBeDisabled();
+  await expect(page.locator("#voice-settings")).toContainText(
+    "Whisper Small Q5_1",
+  );
+  await page.setViewportSize({ width: 960, height: 850 });
+  await page.screenshot({ path: "qa-artifacts/settings.png", fullPage: true });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
     ),
   ).toBe(true);
 });
