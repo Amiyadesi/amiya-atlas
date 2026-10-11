@@ -11,6 +11,7 @@
   export let id = "capture";
   export let compact = false;
   export let submit: () => void;
+  export let save: () => void;
   export let paste: () => void;
   export let microphone: () => void;
   export let cancelRecording: () => void;
@@ -71,15 +72,24 @@
         >{recording ? "■ 停止并转写" : "◉ 语音"}</button
       >
     </div>
-    <button
-      class="primary"
-      type="submit"
-      disabled={busy || recording || voiceBusy || !text.trim()}
-      >{busy ? "正在理解…" : "帮我记住"} <span>↗</span></button
-    >
+    <div class="capture-actions">
+      <button
+        class="text-button"
+        type="button"
+        on:click={save}
+        disabled={busy || recording || voiceBusy || !text.trim()}
+        title="保存到待确认，暂不调用模型">先存原文</button
+      >
+      <button
+        class="primary"
+        type="submit"
+        disabled={busy || recording || voiceBusy || !text.trim()}
+        >{busy ? "正在处理…" : "整理预览"} <span>↗</span></button
+      >
+    </div>
   </div>
   <div class="capture-hint">
-    <span>✦ 自动整理，等你确认</span><span
+    <span>✦ 先存原文不调用模型；整理后等你确认</span><span
       ><kbd>Ctrl ↵</kbd> 整理 · <kbd>Esc</kbd> 取消录音</span
     >
   </div>

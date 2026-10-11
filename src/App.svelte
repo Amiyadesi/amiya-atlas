@@ -51,18 +51,10 @@
     cancelVoice,
   } from "./features/voice/api";
 
-  type Page = "Home" | "Search" | "Memory" | "Explore" | "Inbox" | "Settings";
-  const pages: Page[] = [
-    "Home",
-    "Search",
-    "Memory",
-    "Explore",
-    "Inbox",
-    "Settings",
-  ];
+  type Page = "Home" | "Memory" | "Explore" | "Inbox" | "Settings";
+  const pages: Page[] = ["Home", "Memory", "Inbox", "Settings"];
   const labels: Record<Page, string> = {
     Home: "首页",
-    Search: "搜索",
     Memory: "记忆",
     Explore: "探索",
     Inbox: "待确认",
@@ -70,7 +62,6 @@
   };
   const symbols: Record<Page, string> = {
     Home: "⌂",
-    Search: "⌕",
     Memory: "▤",
     Explore: "◇",
     Inbox: "▱",
@@ -83,8 +74,7 @@
   let passwordConfirm = "";
   let text = "";
   let query = "";
-  let queryAnswer = "";
-  let queryRegion = "";
+  let interpretedQuery: { search: string; region: string } | null = null;
   let busy = false;
   let modelBusy = false;
   let parsingId = "";
@@ -152,7 +142,11 @@
     .slice()
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
     .slice(0, 6);
-  $: results = searchEntities(snapshot, query, queryRegion);
+  $: results = searchEntities(
+    snapshot,
+    interpretedQuery?.search ?? query,
+    interpretedQuery?.region ?? "",
+  );
   $: selected = snapshot.entities.find(
     (e) => e.id === selectedId && e.privacy !== "SECRET",
   );
@@ -210,9 +204,6 @@
     selectedId = "";
     previewId = "";
     error = "";
-    queryAnswer = "";
-    queryRegion = "";
-    if (next === "Explore" && !rootId) rootId = recent[0]?.id ?? "";
   }
   function openEntity(id: string) {
     selectedId = id;
@@ -261,8 +252,7 @@
     notice = "";
     error = "";
     pendingImport = null;
-    queryAnswer = "";
-    queryRegion = "";
+    interpretedQuery = null;
     connection = "";
   }
   async function sync() {
@@ -449,7 +439,7 @@
       }
     }
   }
-  async function capture() {
+  async function capture(parseNow: boolean) {
     if (!text.trim() || busy || recording || voiceBusy) return;
     busy = true;
     error = "";
@@ -464,12 +454,16 @@
       quickOpen = false;
       const input = snapshot.captures?.find((c) => !before.has(c.id));
       if (!input) throw new Error("原文保存失败");
-      await parseCapture(input, true);
+      navigate("Inbox");
+      notice = "";
+      if (parseNow) await parseCapture(input, true);
+      else flash("原文已保存。随时可以在待确认中开始整理。");
     } catch (e) {
       if (token === epoch) {
         error = readable(e);
-        busy = false;
       }
+    } finally {
+      if (token === epoch) busy = false;
     }
   }
   async function confirm(content: Proposal) {
@@ -484,7 +478,7 @@
       snapshot = next;
       const record = snapshot.proposals?.find((p) => p.id === id);
       previewId = "";
-      flash("变更已应用。原文也一起保留了。");
+      notice = "";
       const rememberedId = record?.entityIds.find((id) =>
         snapshot.entities.some((e) => e.id === id && e.privacy !== "SECRET"),
       );
@@ -609,14 +603,13 @@
     busy = true;
     error = "";
     const token = epoch;
+    const question = query.trim();
     try {
-      const parsed = await createProvider(config).parseQuery(query);
-      if (token !== epoch) return;
-      query = parsed.search;
-      queryRegion = parsed.region;
-      queryAnswer = `按${parsed.region ? `地区 ${parsed.region}` : "名称"}检索已确认的记忆`;
+      const parsed = await createProvider(config).parseQuery(question);
+      if (token !== epoch || query.trim() !== question) return;
+      interpretedQuery = { search: parsed.search, region: parsed.region };
     } catch (e) {
-      if (token === epoch) error = readable(e);
+      if (token === epoch && query.trim() === question) error = readable(e);
     } finally {
       if (token === epoch) busy = false;
     }
@@ -928,10 +921,16 @@
       <p class="sidebar-label">你的数字世界</p>
       <nav aria-label="主导航">
         {#each pages as item}<button
-            class:active={page === item}
+            class:active={page === item ||
+              (page === "Explore" && item === "Memory")}
+            aria-current={page === item ||
+            (page === "Explore" && item === "Memory")
+              ? "page"
+              : undefined}
+            aria-label={labels[item]}
             on:click={() => navigate(item)}
             ><span class="nav-symbol">{symbols[item]}</span><span
-              >{labels[item]}<small>{item}</small></span
+              >{labels[item]}</span
             >{#if item === "Inbox" && pending.length}<span class="count"
                 >{pending.length}</span
               >{/if}</button
@@ -986,7 +985,8 @@
             voiceReady={voiceInfo.ready}
             seconds={voiceSeconds}
             level={voiceLevel}
-            submit={capture}
+            submit={() => capture(true)}
+            save={() => capture(false)}
             paste={pasteCapture}
             {microphone}
             cancelRecording={stopVoice}
@@ -1087,7 +1087,7 @@
             />{:else}<div class="page-heading">
               <p class="eyebrow">YOUR WORDS, WAITING TO BECOME MEMORY</p>
               <h1>待确认</h1>
-              <p>原话已经保留。看看 Atlas 理解得对不对。</p>
+              <p>原文已经保留。整理后检查变更，确认才会写入记忆。</p>
             </div>
             {#if pending.length}<div class="inbox-list">
                 {#each pending as input}{@const proposal =
@@ -1096,8 +1096,12 @@
                     )}
                   <article class="panel inbox-item">
                     <div class="section-heading">
-                      <span class="pill"
-                        >{proposal ? "提案已准备好" : "等待解析"}</span
+                      <span class="pill" role="status"
+                        >{parsingId === input.id
+                          ? "原文已保存 · 正在整理…"
+                          : proposal
+                            ? "等待确认"
+                            : "原文已保存 · 待整理"}</span
                       ><span class="muted"
                         >{input.inputType === "voice"
                           ? "语音转写 · "
@@ -1111,7 +1115,7 @@
                       <button
                         class="text-button danger"
                         disabled={busy}
-                        on:click={() => dismiss(input.id)}>暂不整理</button
+                        on:click={() => dismiss(input.id)}>移出待确认</button
                       ><button
                         class="secondary"
                         disabled={busy}
@@ -1119,8 +1123,8 @@
                         >{parsingId === input.id
                           ? "正在理解…"
                           : proposal
-                            ? "重新解析"
-                            : "重新尝试"}</button
+                            ? "重新理解"
+                            : "开始整理"}</button
                       >{#if proposal}<button
                           class="primary"
                           disabled={busy}
@@ -1137,10 +1141,10 @@
                   >记第一句话</button
                 >
               </div>{/if}{/if}
-        {:else if page === "Search" || page === "Memory"}
+        {:else if page === "Memory"}
           {#if selected}<div class="detail-header">
               <button class="text-button" on:click={() => (selectedId = "")}
-                >← 全部记忆</button
+                >← 返回记忆列表</button
               ><button class="primary" on:click={() => explore(selected.id)}
                 >探索关联 ◇</button
               >
@@ -1207,37 +1211,41 @@
                     </footer>
                   </blockquote>{/each}{/if}
             </article>{:else}<div class="page-heading">
-              <p class="eyebrow">
-                {page === "Search"
-                  ? "FIND WHAT YOUR MIND LEFT BEHIND"
-                  : "A WORLD YOU CAN COME BACK TO"}
-              </p>
-              <h1>{page === "Search" ? "想找什么？" : "你的记忆"}</h1>
-              <p>
-                {page === "Search"
-                  ? "搜索名称、地区或备注，也可以让 Atlas 理解你的问题。"
-                  : "每一条都来自你确认过的信息。"}
-              </p>
+              <p class="eyebrow">A WORLD YOU CAN COME BACK TO</p>
+              <h1>你的记忆</h1>
+              <p>输入关键词即可筛选。也可以写一句话，点击「理解问题」。</p>
             </div>
-            <form class="search-box" on:submit|preventDefault={ask}>
+            <div class="search-box" role="search" aria-label="查找已确认的记忆">
               <span>⌕</span><input
                 bind:value={query}
-                placeholder={page === "Search"
-                  ? "美国，或者「我有哪些日本的东西？」"
-                  : "搜索名称、地区、备注…"}
+                placeholder="名称、地区、备注，或「我有哪些日本的东西？」"
                 aria-label="搜索记忆"
                 on:input={() => {
-                  queryAnswer = "";
-                  queryRegion = "";
+                  interpretedQuery = null;
+                  error = "";
                 }}
-              />{#if page === "Search"}<button
-                  class="secondary"
-                  disabled={busy || !query.trim()}
-                  type="submit">{busy ? "正在理解…" : "理解问题"}</button
-                >{/if}
-            </form>
-            {#if queryAnswer}<p class="muted">
-                {queryAnswer}。结果来自数据库。
+              />{#if query}<button
+                  class="text-button"
+                  aria-label="清除搜索"
+                  on:click={() => {
+                    query = "";
+                    interpretedQuery = null;
+                    error = "";
+                  }}>×</button
+                >{/if}<button
+                class="secondary"
+                disabled={busy || !query.trim()}
+                on:click={ask}>{busy ? "正在理解…" : "理解问题"}</button
+              >
+            </div>
+            {#if interpretedQuery}<p
+                class="search-interpretation"
+                role="status"
+              >
+                筛选：{interpretedQuery.search ||
+                  "全部名称"}{interpretedQuery.region
+                  ? ` · 地区 ${interpretedQuery.region}`
+                  : ""}。结果来自已确认的记忆。
               </p>{/if}
             <div class="list-heading">
               <span>{results.length} 条记忆</span><span>仅显示已确认的内容</span
@@ -1261,6 +1269,9 @@
                 没有找到相关记忆。试试名称、地区或备注中的关键词。
               </div>{/if}{/if}
         {:else if page === "Explore"}
+          <button class="text-button" on:click={() => openEntity(rootId)}
+            >← 返回记忆详情</button
+          >
           <div class="page-heading">
             <p class="eyebrow">FOLLOW THE CONNECTIONS</p>
             <h1>探索你的数字世界</h1>
@@ -1457,7 +1468,7 @@
                 桌面版使用。输入框也可搭配操作系统听写；Windows 为 Win H。
               </p>{/if}
             <p class="muted">
-              如果记忆模型使用远程服务，点击「帮我记住」后会发送转写文字；语音转写本身始终在本机运行。
+              如果记忆模型使用远程服务，点击「整理预览」后会发送转写文字；语音转写本身始终在本机运行。
             </p>
           </section>
           <section class="panel settings-panel">
@@ -1573,7 +1584,8 @@
         voiceReady={voiceInfo.ready}
         seconds={voiceSeconds}
         level={voiceLevel}
-        submit={capture}
+        submit={() => capture(true)}
+        save={() => capture(false)}
         paste={pasteCapture}
         {microphone}
         cancelRecording={stopVoice}

@@ -40,7 +40,8 @@
     ...draft.entitiesToCreate.map((e) => ({ id: e.ref, name: e.name })),
   ];
   $: changes = [...draft.entitiesToCreate, ...draft.entitiesToUpdate];
-  $: hasChanges = proposalDiff(draft, snapshot).length > 0;
+  $: changeCount = proposalDiff(draft, snapshot).length;
+  $: hasChanges = changeCount > 0;
   $: destructive = !!(
     draft.entitiesToDelete?.length ||
     draft.relationsToDelete?.length ||
@@ -193,7 +194,9 @@
     </div>
     <span class="pill amber">等待你的确认</span>
   </div>
-  <p class="muted">可以直接修改下面的信息。确认前，这些内容还没有写入记忆。</p>
+  <p class="muted">
+    核对变更，可取消单项或展开修改。确认前，已有记忆保持原样。
+  </p>
   <blockquote class="original">{capture.rawText}</blockquote>
   {#if draft.uncertainty.length}<div class="uncertainties">
       <strong>还有不确定的地方</strong>{#each draft.uncertainty as item}<p>
@@ -450,7 +453,11 @@
       {validationError}
     </div>{/if}
   <div class="proposal-footer">
-    <span class="muted">只有你确认，Atlas 才记住。</span>
+    <span class="muted"
+      >{changeCount} 项变更{destructive
+        ? " · 包含删除，请逐项核对"
+        : " · 确认后才写入"}</span
+    >
     <div class="button-row">
       <button
         class="secondary"

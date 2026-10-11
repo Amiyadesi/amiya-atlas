@@ -29,7 +29,7 @@ test("a rejected stale deletion refreshes its diff and retries against new relat
   });
   await page.goto("/");
   await page.getByLabel("告诉 Atlas 一件事").fill(text);
-  await page.getByRole("button", { name: "帮我记住" }).click();
+  await page.getByRole("button", { name: "整理预览" }).click();
   await expect(page.getByLabel("－ 删除记忆：Saily +1")).toBeVisible();
   await page.evaluate(async () => {
     const path = "/src/lib/api.ts";
@@ -100,7 +100,7 @@ test("mixed changes disclose cascades, require confirmation, and undo can return
   );
   await page.goto("/");
   await page.getByLabel("告诉 Atlas 一件事").fill(text);
-  await page.getByRole("button", { name: "帮我记住" }).click();
+  await page.getByRole("button", { name: "整理预览" }).click();
   const diff = page.getByLabel("记忆变更预览");
   await expect(diff).toContainText("＋ 新增记忆");
   await expect(diff.locator(".diff-deletion")).toHaveCount(3);
@@ -216,7 +216,7 @@ test("retiring a number displays the state diff and keeps its graph and original
   );
   await page.goto("/");
   await page.getByLabel("告诉 Atlas 一件事").fill(text);
-  await page.getByRole("button", { name: "帮我记住" }).click();
+  await page.getByRole("button", { name: "整理预览" }).click();
   const diff = page.getByLabel("记忆变更预览");
   await expect(diff).toContainText("使用中");
   await expect(diff).toContainText("已停用");

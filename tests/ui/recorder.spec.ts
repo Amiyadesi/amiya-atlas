@@ -26,11 +26,27 @@ test("real WebAudio worklet produces WAV and cancellation releases the microphon
       tracks.push(...stream.getTracks());
       return stream;
     };
-    const recorder = new PcmRecorder(
-      () => {},
-      () => {},
-    );
+    let heardAudio!: () => void;
+    const audioStarted = new Promise<void>((resolve) => {
+      heardAudio = resolve;
+    });
+    const recorder = new PcmRecorder(heardAudio, () => {});
     await recorder.start();
+    // On Windows, the audio device can start rendering after start() resolves.
+    let firstSampleTimeout: number | undefined;
+    try {
+      await Promise.race([
+        audioStarted,
+        new Promise<never>((_, reject) => {
+          firstSampleTimeout = window.setTimeout(
+            () => reject(new Error("模拟麦克风未产生音频")),
+            10000,
+          );
+        }),
+      ]);
+    } finally {
+      window.clearTimeout(firstSampleTimeout);
+    }
     await new Promise((resolve) => setTimeout(resolve, 1000));
     const wav = await recorder.stop();
     const header = new DataView(wav.buffer);

@@ -160,11 +160,6 @@ p {
 .sidebar nav button:hover {
   background: #e8edde;
 }
-.sidebar nav button small {
-  display: block;
-  font-size: 10px;
-  color: #899588;
-}
 .nav-symbol {
   font-size: 24px;
   line-height: 1;
@@ -303,6 +298,13 @@ p {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+.capture-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 .capture-tool {
   border: 1px solid #e4eadf;
@@ -757,6 +759,11 @@ kbd {
   font-size: 13px;
   min-width: 0;
 }
+.search-interpretation {
+  color: #526848;
+  font-size: 12px;
+  margin: 12px 0;
+}
 .list-heading {
   display: flex;
   justify-content: space-between;
@@ -1129,8 +1136,12 @@ textarea {
   margin: 5px 0 0;
 }
 .proposal-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  background: #fff;
   border-top: 1px solid #e7eedc;
-  padding-top: 22px;
+  padding: 16px 0;
   margin-top: 24px;
   display: flex;
   justify-content: space-between;
