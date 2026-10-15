@@ -1,0 +1,8 @@
+[Unit]
+Description=Encrypted Relakeep cloud backup to Sayori
+After=docker-modern.service network-online.target
+[Service]
+Type=oneshot
+EnvironmentFile=/opt/relakeep/backup-destination.env
+ExecStart=/opt/relakeep/backup-cloud.sh
+User=root

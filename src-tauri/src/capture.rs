@@ -16,6 +16,7 @@ pub const TYPES: &[&str] = &[
     "Service",
     "Project",
     "Repository",
+    "Client", "Order",
 ];
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -81,6 +82,10 @@ pub struct ProposedRemoval {
 #[derive(Clone, Default, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Proposal {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub finance_actions: Vec<crate::ledger::Action>,
+    #[serde(default)]
+    pub numbers_reviewed: bool,
     pub entities_to_create: Vec<ProposedEntity>,
     pub entities_to_update: Vec<ProposedEntity>,
     pub relations_to_create: Vec<ProposedRelation>,
@@ -103,6 +108,10 @@ pub struct ChangeRecords {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProposalUndo {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub account_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub transaction_ids: Vec<String>,
     pub applied_revision: u64,
     pub before: ChangeRecords,
     pub after: ChangeRecords,
@@ -485,6 +494,7 @@ fn validate_removals(
 }
 
 pub fn stage_versions(current: &Snapshot, proposal: &mut Proposal) -> Result<()> {
+    proposal.numbers_reviewed = false;
     for item in &mut proposal.entities_to_update {
         let entity = current
             .entities
@@ -616,12 +626,15 @@ pub fn confirm(
         .find(|c| c.id == record.capture_id && c.status == "PENDING")
         .ok_or("原文已处理")?;
     let (mut next, ids) = apply_proposal(current, input, content)?;
+    crate::ledger::confirm_numbers(current, input, content)?;
     let (before_entities, after_entities) =
         changed_records(&current.entities, &next.entities, |e| &e.id)?;
     let (before_relations, after_relations) =
         changed_records(&current.relations, &next.relations, |r| &r.id)?;
     let (before_events, after_events) = changed_records(&current.events, &next.events, |e| &e.id)?;
     let undo = ProposalUndo {
+        account_ids: next.ledger_accounts.iter().filter(|a|!current.ledger_accounts.iter().any(|old|old.id==a.id)).map(|a|a.id.clone()).collect(),
+        transaction_ids: next.transactions.iter().filter(|t|!current.transactions.iter().any(|old|old.id==t.id)).map(|t|t.id.clone()).collect(),
         applied_revision: current.revision + 1,
         before: ChangeRecords {
             entities: before_entities,
@@ -699,12 +712,23 @@ pub fn undo(current: &Snapshot, proposal_id: &str) -> Result<(Snapshot, Vec<Stri
     next.relations.extend(undo.before.relations.clone());
     next.events.retain(|e| !event_ids.contains(&e.id));
     next.events.extend(undo.before.events.clone());
+    for id in &undo.transaction_ids {
+        let original=current.transactions.iter().find(|t|&t.id==id).ok_or("原流水缺失")?;
+        let mut inverse=original.clone();
+        if original.reversal_of.is_some() {
+            inverse.id=domain::id();inverse.idempotency_key=domain::id();inverse.reversal_of=None;inverse.created_at=domain::now();inverse.source=crate::ledger::Source::default();
+            for leg in &mut inverse.legs {leg.money=crate::ledger::from_units(-crate::ledger::units(&leg.money)?,&leg.money.asset)?;}
+        } else {inverse=crate::ledger::reverse(original,domain::id(),domain::id(),original.occurred_at.clone())?;}
+        next.transactions.push(inverse);
+    }
+    for id in &undo.account_ids {let used=next.transactions.iter().any(|t|t.legs.iter().any(|l|&l.account_id==id));if used{if let Some(a)=next.ledger_accounts.iter_mut().find(|a|&a.id==id){a.archived=Some(true);}}else{next.ledger_accounts.retain(|a|&a.id!=id);}}
+    let finance_undo=!undo.transaction_ids.is_empty()||!undo.account_ids.is_empty();
     let proposal = next
         .proposals
         .iter_mut()
         .find(|p| p.id == proposal_id)
         .unwrap();
-    proposal.status = "PENDING".into();
+    proposal.status = if finance_undo {"DISMISSED"}else{"PENDING"}.into();
     proposal.entity_ids.clear();
     proposal.undo = None;
     proposal.base_revision = Some(current.revision + 1);
@@ -712,7 +736,7 @@ pub fn undo(current: &Snapshot, proposal_id: &str) -> Result<(Snapshot, Vec<Stri
         .iter_mut()
         .find(|c| c.id == record.capture_id)
         .ok_or("原文缺失")?
-        .status = "PENDING".into();
+        .status = if finance_undo {"DISMISSED"}else{"PENDING"}.into();
     next.validate()?;
     let removed = undo
         .after
@@ -748,6 +772,8 @@ pub fn apply_proposal(
         && proposal.entities_to_delete.is_empty()
         && proposal.relations_to_delete.is_empty()
         && proposal.events_to_delete.is_empty()
+        && proposal.finance_actions.is_empty()
+        && proposal.uncertainty.is_empty()
     {
         return Err("提案没有可保存的记忆".into());
     }
@@ -904,6 +930,7 @@ pub fn apply_proposal(
         }
         changed.insert(entity_id);
     }
+    crate::ledger::apply(&mut next, &proposal.finance_actions, capture)?;
     next.validate()?;
     let mut entity_ids: Vec<_> = changed.into_iter().collect();
     entity_ids.sort();
@@ -975,7 +1002,7 @@ fn patch_entity(entity: &mut Entity, item: &ProposedEntity, capture: &Capture) -
         attributes.insert("notes".into(), Value::String(note));
     }
     for (key, value) in attributes {
-        if !(value.is_string()
+        if !(crate::ledger::money_value(&value).is_ok() || value.is_string()
             || value.is_number()
             || value.is_boolean()
             || value
@@ -984,7 +1011,7 @@ fn patch_entity(entity: &mut Entity, item: &ProposedEntity, capture: &Capture) -
         {
             return Err("属性必须是简单文本、数字、布尔或文本列表".into());
         }
-        let value_type = if value.is_number() {
+        let value_type = if value.is_object() { "money" } else if value.is_number() {
             "number"
         } else if value.is_boolean() {
             "boolean"

@@ -1,4 +1,21 @@
 /** PCM capture only. No browser speech service, network request or storage. */
+export function normalizePcm(samples: Float32Array): void {
+  const mean = samples.reduce((sum, value) => sum + value, 0) / samples.length;
+  let energy = 0;
+  let peak = 0;
+  for (let i = 0; i < samples.length; i++) {
+    samples[i] -= mean;
+    energy += samples[i] * samples[i];
+    peak = Math.max(peak, Math.abs(samples[i]));
+  }
+  const rms = Math.sqrt(energy / samples.length);
+  if (!Number.isFinite(rms) || rms < 0.0001)
+    throw new Error("麦克风没有收到声音，请检查所选输入设备");
+  // Cap gain so a nearly silent input does not become loud background noise.
+  const gain = Math.min(24, 0.08 / rms, 0.95 / peak);
+  for (let i = 0; i < samples.length; i++) samples[i] *= gain;
+}
+
 export function encodePcmWav(samples: Float32Array): Uint8Array {
   if (samples.length < 5600 || samples.length > 16000 * 60)
     throw new Error("录音需在 0.35–60 秒之间");
@@ -58,7 +75,8 @@ export class PcmRecorder {
       audio: {
         channelCount: 1,
         echoCancellation: true,
-        noiseSuppression: true,
+        autoGainControl: true,
+        noiseSuppression: false,
       },
       video: false,
     });
@@ -160,12 +178,16 @@ export class PcmRecorder {
     source.buffer = buffer;
     source.connect(offline.destination);
     source.start();
-    const rendered = await offline.startRendering();
-    const resampled = rendered.getChannelData(0);
-    const wav = encodePcmWav(resampled);
-    resampled.fill(0);
-    buffer.getChannelData(0).fill(0);
-    return wav;
+    let resampled: Float32Array | undefined;
+    try {
+      const rendered = await offline.startRendering();
+      resampled = rendered.getChannelData(0);
+      normalizePcm(resampled);
+      return encodePcmWav(resampled);
+    } finally {
+      resampled?.fill(0);
+      buffer.getChannelData(0).fill(0);
+    }
   }
   cancel(): void {
     this.generation++;

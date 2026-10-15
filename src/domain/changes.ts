@@ -6,6 +6,8 @@ import type {
   VaultSnapshot,
 } from "../lib/types";
 import { newId } from "../lib/types";
+import { reverseTransaction } from './ledger';
+import { negate } from './money';
 
 export interface ChangeRecords {
   entities: Entity[];
@@ -13,6 +15,8 @@ export interface ChangeRecords {
   events: LifecycleEvent[];
 }
 export interface ProposalUndo {
+  transactionIds?: string[];
+  accountIds?: string[];
   appliedRevision: number;
   before: ChangeRecords;
   after: ChangeRecords;
@@ -239,7 +243,8 @@ export function projectEntity(
   }
   for (const [key, value] of Object.entries(attrs)) {
     const valueType =
-      typeof value === "number"
+      typeof value === 'object' && value !== null && !Array.isArray(value) && 'amount' in value
+        ? 'money' : typeof value === "number"
         ? "number"
         : typeof value === "boolean"
           ? "boolean"
@@ -283,7 +288,7 @@ export function createUndo(
       if (!equal(item, original.get(item.id)))
         (right[key] as Array<typeof item>).push(structuredClone(item));
   }
-  return { appliedRevision, before: left, after: right };
+  return { appliedRevision, before: left, after: right, transactionIds:(after.transactions??[]).filter(t=>!before.transactions?.some(old=>old.id===t.id)).map(t=>t.id),accountIds:(after.ledgerAccounts??[]).filter(a=>!before.ledgerAccounts?.some(old=>old.id===a.id)).map(a=>a.id) };
 }
 export function undoBrowserProposal(
   current: VaultSnapshot,
@@ -295,6 +300,7 @@ export function undoBrowserProposal(
   if (record.undo.appliedRevision !== current.revision)
     throw new Error("记忆库已有新的操作，不能覆盖后续变更；请用新提案修正");
   const next = structuredClone(current);
+  const financeUndo=!!(record.undo.transactionIds?.length||record.undo.accountIds?.length);
   for (const key of ["entities", "relations", "events"] as const) {
     const ids = new Set(
       [...record.undo.before[key], ...record.undo.after[key]].map(
@@ -310,15 +316,17 @@ export function undoBrowserProposal(
     p.id === proposalId
       ? {
           ...p,
-          status: "PENDING",
+          status: financeUndo ? "DISMISSED" : "PENDING",
           entityIds: [],
           undo: undefined,
           baseRevision: current.revision + 1,
         }
       : p,
   );
+  for(const id of record.undo.transactionIds??[]){const t=current.transactions?.find(t=>t.id===id);if(!t)throw new Error('原流水缺失');next.transactions??=[];next.transactions.push(t.reversalOf?{...structuredClone(t),id:newId('tx'),idempotencyKey:newId('undo'),reversalOf:undefined,createdAt:new Date().toISOString(),source:{},legs:t.legs.map(l=>({...l,money:negate(l.money)}))}:reverseTransaction(t,t.occurredAt));}
+  for(const id of record.undo.accountIds??[]){const used=next.transactions?.some(t=>t.legs.some(l=>l.accountId===id));next.ledgerAccounts=next.ledgerAccounts?.flatMap(a=>a.id!==id?[a]:used?[{...a,archived:true}]:[]);}
   next.captures = next.captures?.map((c) =>
-    c.id === record.captureId ? { ...c, status: "PENDING" } : c,
+    c.id === record.captureId ? { ...c, status: financeUndo ? "DISMISSED" : "PENDING" } : c,
   );
   next.revision += 1;
   return next;

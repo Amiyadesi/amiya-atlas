@@ -18,3 +18,26 @@ extension/dist/
 
 test-results/
 playwright-report/
+web/build/
+web/static/downloads/*.exe
+web/.svelte-kit/
+server/dist/
+**/node_modules/
+**/.env
+**/.env.*
+!**/.env.example
+_private/
+.codex/
+output/
+selfhost.env
+web/static/downloads/*.apk
+web/static/downloads/*.deb
+web/static/downloads/*.AppImage
+web/static/downloads/*.tar.gz
+web/static/downloads/Relakeep_*_guide.md
+*.age
+*.pem
+*.key
+*.db
+*.db-wal
+*.db-shm

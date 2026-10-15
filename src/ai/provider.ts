@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../lib/runtime";
 import { z } from "zod";
 import {
   entityType,
@@ -9,11 +9,13 @@ import {
 } from "../domain/proposal";
 import type { Proposal } from "../domain/proposal";
 import type { VaultSnapshot } from "../lib/types";
-import { isTauri } from "../lib/api";
+import { isPersistent } from "../lib/runtime";
 import { hasRemovalIntent } from "../domain/changes";
+import { cloudResult } from './cloud-client';
+import { cloudInputSchema } from './cloud-contract';
 
 export interface ProviderConfig {
-  kind: "local" | "ollama" | "openai-compatible";
+  kind: "local" | "ollama" | "openai-compatible" | "cloud";
   baseUrl: string;
   model: string;
   apiKey: string;
@@ -96,6 +98,7 @@ export function generationSchema(
     "propertyNames",
   ]);
   const generated = new Set([
+    "financeActions", "numbersReviewed",
     "evidence",
     "precision",
     "expectedUpdatedAt",
@@ -252,7 +255,7 @@ export function matchingContext(text: string, snapshot: VaultSnapshot) {
 }
 
 export const chatTransport: Transport = async (request) => {
-  if (isTauri) return invoke<string>("ai_chat", { request });
+  if (isPersistent) return invoke<string>("ai_chat", { request });
   const { config, messages, schema } = request;
   const ollama = config.kind !== "openai-compatible";
   const body: Record<string, unknown> = ollama
@@ -319,7 +322,7 @@ class StructuredProvider implements ModelProvider {
     private transport: Transport = chatTransport,
   ) {}
   async healthCheck(): Promise<boolean> {
-    if (isTauri) return invoke<boolean>("ai_health", { config: this.config });
+    if (isPersistent) return invoke<boolean>("ai_health", { config: this.config });
     try {
       const response = await fetch(
         `${this.config.baseUrl.replace(/\/$/, "")}/${this.config.kind === "openai-compatible" ? "models" : "api/tags"}`,
@@ -519,10 +522,36 @@ class StructuredProvider implements ModelProvider {
 export class EmbeddedLocalProvider extends StructuredProvider {}
 export class OllamaProvider extends StructuredProvider {}
 export class OpenAICompatibleProvider extends StructuredProvider {}
+export class CloudProvider implements ModelProvider {
+  async healthCheck():Promise<boolean> {
+    if(!isPersistent) return false;
+    const features=await invoke<{cloud:boolean}>('cloud_request',{path:'/api/features'});
+    const session=await invoke<{connected:boolean}>('cloud_status');
+    return features.cloud&&session.connected;
+  }
+  async parseCapture(text:string,context:AtlasContext):Promise<Proposal> {
+    if(!isPersistent) throw new Error('官网云服务请在桌面版使用');
+    const removal=hasRemovalIntent(text);
+    const related=removal?removalContext(text,context.snapshot):{existingRelations:[],existingEvents:[]};
+    const result=await cloudResult({kind:'capture',text,now:context.now,
+      entities:cloudInputSchema.shape.entities.parse(matchingContext(text,context.snapshot).map(e=>({...e,fieldKeys:('fieldKeys' in e?e.fieldKeys:undefined)??[]}))),
+      relations:related.existingRelations as import('./cloud-contract').CloudInput['relations'],
+      events:related.existingEvents,
+    });
+    const proposal=proposalSchema.parse(result);
+    validateProposal(proposal,context.snapshot,text);
+    return proposal;
+  }
+  async parseQuery(text:string):Promise<GraphQuery> {
+    if(!isPersistent) throw new Error('官网云服务请在桌面版使用');
+    return z.strictObject({search:z.string().max(500),region:z.enum(['','US','JP','CN','HK','TW'])}).parse(await cloudResult({kind:'query',text,now:new Date().toISOString(),entities:[],relations:[],events:[]}));
+  }
+}
 export function createProvider(
   config: ProviderConfig,
   transport?: Transport,
 ): ModelProvider {
+  if(config.kind==='cloud') return new CloudProvider();
   if (config.kind === "local")
     return new EmbeddedLocalProvider(
       { ...config, responseFormat: "json_object" },

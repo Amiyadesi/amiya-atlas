@@ -1,9 +1,12 @@
 <script lang="ts">
   import { oneHop } from "../../domain/proposal";
   import type { VaultSnapshot } from "../../lib/types";
+  import { categoryLabel, relationLabel } from "../../lib/record-labels";
   export let snapshot: VaultSnapshot;
   export let rootId: string;
   export let onOpen: (id: string) => void;
+  export let moneyData: Record<string,{label:string;weight:number;idle?:string}> = {};
+  export let onPick: (id:string)=>void = ()=>{};
   let roots: string[] = [];
   let loadedRoot = "";
   let picked = "";
@@ -18,13 +21,13 @@
     pointer: number;
   } | null = null;
   const filters: Record<string, string[]> = {
-    Authentication: ["AUTHENTICATES_WITH", "REGISTERED_WITH"],
-    Recovery: ["RECOVERS_WITH"],
-    Ownership: ["OWNS", "OWNS_ADDRESS", "MANAGES", "MANAGED_BY", "ISSUED_BY"],
-    Payment: ["PAID_BY", "BILLED_FOR"],
-    Hosting: ["HOSTED_ON", "HOSTS", "EXPOSED_AT"],
-    Dependency: ["DEPENDS_ON", "USES", "CONNECTED_VIA"],
-    Deployment: ["SOURCE_IN", "DEPLOYED_ON"],
+    登录: ["AUTHENTICATES_WITH", "REGISTERED_WITH"],
+    找回: ["RECOVERS_WITH"],
+    归属: ["OWNS", "OWNS_ADDRESS", "MANAGES", "MANAGED_BY", "ISSUED_BY"],
+    付款: ["PAID_BY", "BILLED_FOR", "INVOICED_TO", "ALLOCATED_TO"],
+    托管: ["HOSTED_ON", "HOSTS", "EXPOSED_AT"],
+    依赖: ["DEPENDS_ON", "USES", "CONNECTED_VIA"],
+    部署: ["SOURCE_IN", "DEPLOYED_ON"],
   };
   $: if (rootId !== loadedRoot) {
     roots = [rootId];
@@ -131,7 +134,7 @@
           markerHeight="10"
           refX="20"
           refY="4"
-          orient="auto"><path d="M0,0 L0,8 L9,4 z" fill="#aeb8b0" /></marker
+          orient="auto"><path d="M0,0 L0,8 L9,4 z" fill="#8998bc" /></marker
         ></defs
       >{#each graph.relations as relation}{@const from = positions.get(
           relation.sourceId,
@@ -140,30 +143,30 @@
             y1={from.y}
             x2={to.x}
             y2={to.y}
-            stroke="#b8c4ba"
+            stroke="#657391"
             stroke-width="1.5"
             marker-end="url(#atlas-arrow)"
           /><text
             x={(from.x + to.x) / 2}
             y={(from.y + to.y) / 2 - 12}
             text-anchor="middle"
-            fill="#697970"
-            font-size="10">{relation.type}</text
+            fill="#a6b1c8"
+            font-size="10">{relation.type==='ALLOCATED_TO' ? relation.note : relationLabel(relation.type)}</text
           >{/if}{/each}</svg
     >
     {#each visible as entity}{@const p = positions.get(entity.id)!}<button
         class:root={entity.id === rootId}
         class:picked={entity.id === picked}
         class="graph-node"
-        style={`left: ${p.x}px; top: ${p.y}px;`}
-        on:click={() => (picked = entity.id)}
-        ><span>{entity.category}</span><strong>{entity.name}</strong></button
+        style={`left: ${p.x}px; top: ${p.y}px;${moneyData[entity.id]?`min-width:${150+60*moneyData[entity.id].weight}px;background:color-mix(in srgb,var(--accent) ${Math.round(8+moneyData[entity.id].weight*35)}%,var(--surface));`:''}`}
+        on:click={() => {picked = entity.id;onPick(picked);}}
+        ><span>{categoryLabel(entity.category)}</span><strong>{entity.name}</strong>{#if moneyData[entity.id]}<small>{moneyData[entity.id].label} / 月</small>{#if moneyData[entity.id].idle&&!/^0(?:\.0+)?$/.test(moneyData[entity.id].idle!)}<small style="border-top:1px dashed #aaa;color:var(--muted)">闲置 {moneyData[entity.id].idle}</small>{/if}{/if}</button
       >{/each}
   </div>
   {#if graph.entities.length > 80}<div class="graph-hint">
-      只显示前 80 个节点，请按关系类型缩小范围。
+      显示 {visible.length} / {graph.entities.length} 个节点
     </div>{:else}<div class="graph-hint">
-      {graph.entities.length} 个相关记忆 · 默认一跳 · 拖动画布探索
+      {graph.entities.length} 个相关记忆
     </div>{/if}
 </div>
 <div class="graph-footer">
@@ -174,7 +177,7 @@
       disabled={!picked}
       on:click={() => {
         if (!roots.includes(picked)) roots = [...roots, picked];
-      }}>展开一跳</button
+      }}>展开关联</button
     ><button class="primary" disabled={!picked} on:click={() => onOpen(picked)}
       >打开详情</button
     >

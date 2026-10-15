@@ -1,4 +1,6 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri, isWindows, isMobile } from "./runtime";
+import {validateLedger} from '../domain/ledger';
+import {applyFinanceActions} from '../domain/finance-capture';
 import type {
   CaptureRequest,
   ImportPreview,
@@ -16,14 +18,14 @@ import {
   undoBrowserProposal,
 } from "../domain/proposal";
 
-export const isTauri =
-  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+import { isPersistent } from "./runtime";
+export { isTauri } from "./runtime";
 
 let browserSnapshot = demoSnapshot();
 let browserUnlocked = true;
 
 export async function vaultStatus(): Promise<VaultStatus> {
-  if (!isTauri)
+  if (!isPersistent)
     return {
       exists: true,
       unlocked: browserUnlocked,
@@ -35,7 +37,7 @@ export async function vaultStatus(): Promise<VaultStatus> {
 export async function initializeVault(
   password: string,
 ): Promise<VaultSnapshot> {
-  if (!isTauri) {
+  if (!isPersistent) {
     browserUnlocked = true;
     browserSnapshot = emptySnapshot();
     return browserSnapshot;
@@ -45,7 +47,7 @@ export async function initializeVault(
 }
 
 export async function unlockVault(password: string): Promise<VaultSnapshot> {
-  if (!isTauri) {
+  if (!isPersistent) {
     browserUnlocked = true;
     return browserSnapshot;
   }
@@ -54,12 +56,22 @@ export async function unlockVault(password: string): Promise<VaultSnapshot> {
 }
 
 export async function loadSnapshot(): Promise<VaultSnapshot> {
-  if (!isTauri) return structuredClone(browserSnapshot);
+  if (!isPersistent) return structuredClone(browserSnapshot);
   return invoke<VaultSnapshot>("load_snapshot");
 }
 
+export async function setDeviceUnlock(enabled: boolean): Promise<void> {
+  if (!isPersistent) throw new Error("设备解锁仅支持 Windows 桌面版");
+  await invoke("set_device_unlock", { enabled });
+}
+export async function unlockDevice(): Promise<VaultSnapshot> {
+  if (!isPersistent) throw new Error("设备解锁仅支持 Windows 桌面版");
+  await invoke("unlock_device");
+  return loadSnapshot();
+}
+
 export async function lockVault(): Promise<void> {
-  if (!isTauri) {
+  if (!isPersistent) {
     browserUnlocked = false;
     return;
   }
@@ -70,7 +82,9 @@ export async function saveSnapshot(
   snapshot: VaultSnapshot,
   unlinkIds: string[] = [],
 ): Promise<VaultSnapshot> {
-  if (!isTauri) {
+  if (!isPersistent) {
+    if(snapshot.revision!==browserSnapshot.revision) throw new Error('数据已更新，请刷新后重试');
+    validateLedger(snapshot,browserSnapshot);
     browserSnapshot = structuredClone({
       ...snapshot,
       revision: snapshot.revision + 1,
@@ -81,7 +95,7 @@ export async function saveSnapshot(
 }
 
 export async function exportBackup(): Promise<string> {
-  if (!isTauri) throw new Error("浏览器预览模式不支持加密备份");
+  if (!isPersistent) throw new Error("浏览器预览模式不支持加密备份");
   return invoke<string>("export_backup");
 }
 
@@ -89,7 +103,7 @@ export async function importBackup(
   payload: string,
   password: string,
 ): Promise<VaultSnapshot> {
-  if (!isTauri) throw new Error("浏览器预览模式不支持恢复备份");
+  if (!isPersistent) throw new Error("浏览器预览模式不支持恢复备份");
   return invoke<VaultSnapshot>("import_backup", { payload, password });
 }
 
@@ -122,12 +136,15 @@ function parseAtlasFile(text: string): VaultSnapshot {
     !Array.isArray(snapshot.events)
   )
     throw new Error("Atlas JSON 缺少实体、关系或事件列表");
-  return {
+  const result = {
+    ...snapshot,
     revision: Number(snapshot.revision ?? 0),
     entities: snapshot.entities,
     relations: snapshot.relations,
     events: snapshot.events,
   } as VaultSnapshot;
+  validateLedger(result);
+  return result;
 }
 
 function importSummary(
@@ -164,12 +181,12 @@ function importSummary(
 }
 
 export async function previewAtlasJson(text: string): Promise<ImportPreview> {
-  if (!isTauri) return importSummary(parseAtlasFile(text), browserSnapshot);
+  if (!isPersistent) return importSummary(parseAtlasFile(text), browserSnapshot);
   return invoke<ImportPreview>("preview_atlas_json", { text });
 }
 
 export async function importAtlasJson(text: string): Promise<VaultSnapshot> {
-  if (!isTauri) {
+  if (!isPersistent) {
     const imported = parseAtlasFile(text);
     const entityIds = new Set(
       browserSnapshot.entities.map((entity) => entity.id),
@@ -251,11 +268,12 @@ export async function importAtlasJson(text: string): Promise<VaultSnapshot> {
 }
 
 export async function exportRedacted(maskPrivate = true): Promise<string> {
-  if (!isTauri) {
+  if (!isPersistent) {
     const redacted = structuredClone(browserSnapshot);
     delete redacted.aiConfig;
     delete redacted.captures;
     delete redacted.proposals;
+    delete redacted.transactions;delete redacted.ledgerAccounts;delete redacted.allocationRules;delete redacted.financeRecords;delete redacted.opaqueRecords;
     const secretIds = new Set(
       redacted.entities
         .filter((entity) => entity.privacy === "SECRET")
@@ -266,7 +284,7 @@ export async function exportRedacted(maskPrivate = true): Promise<string> {
     );
     for (const entity of redacted.entities) {
       entity.fields = entity.fields.filter(
-        (field) => field.privacy !== "SECRET",
+        (field) => field.privacy !== "SECRET" && field.valueType!=='money' && !['notes','cost','monthly_cost','currency','avoidable_project','project'].includes(field.key),
       );
       for (const field of entity.fields) {
         if (maskPrivate && field.privacy === "PRIVATE") {
@@ -299,7 +317,7 @@ export async function beginTextCapture(
   text: string,
   inputType: "text" | "clipboard" | "voice" = "text",
 ): Promise<VaultSnapshot> {
-  if (isTauri)
+  if (isPersistent)
     return invoke<VaultSnapshot>("begin_text_capture", { text, inputType });
   if (!text.trim() || text.length > 10000)
     throw new Error("请输入 1–10000 字的记忆");
@@ -324,7 +342,7 @@ export async function stageProposal(
   content: Proposal,
   provider: string,
 ): Promise<VaultSnapshot> {
-  if (isTauri)
+  if (isPersistent)
     return invoke<VaultSnapshot>("stage_proposal", {
       captureId,
       content,
@@ -335,6 +353,8 @@ export async function stageProposal(
   );
   if (!input) throw new Error("原文不存在或已处理");
   content = structuredClone(content);
+  content.numbersReviewed=false;
+  applyFinanceActions(browserSnapshot,content.financeActions??[],input);
   for (const item of [
     ...content.entitiesToUpdate,
     ...(content.entitiesToDelete ?? []),
@@ -377,7 +397,7 @@ export async function reviseProposal(
   proposalId: string,
   content: Proposal,
 ): Promise<VaultSnapshot> {
-  if (isTauri)
+  if (isPersistent)
     return invoke<VaultSnapshot>("revise_proposal", { proposalId, content });
   applyBrowserProposal(browserSnapshot, proposalId, content);
   browserSnapshot = {
@@ -400,20 +420,20 @@ export async function confirmProposal(
   proposalId: string,
   content: Proposal,
 ): Promise<VaultSnapshot> {
-  if (isTauri)
+  if (isPersistent)
     return invoke<VaultSnapshot>("confirm_proposal", { proposalId, content });
   browserSnapshot = applyBrowserProposal(browserSnapshot, proposalId, content);
   return structuredClone(browserSnapshot);
 }
 export async function undoProposal(proposalId: string): Promise<VaultSnapshot> {
-  if (isTauri) return invoke<VaultSnapshot>("undo_proposal", { proposalId });
+  if (isPersistent) return invoke<VaultSnapshot>("undo_proposal", { proposalId });
   browserSnapshot = undoBrowserProposal(browserSnapshot, proposalId);
   return structuredClone(browserSnapshot);
 }
 export async function dismissCapture(
   captureId: string,
 ): Promise<VaultSnapshot> {
-  if (isTauri) return invoke<VaultSnapshot>("dismiss_capture", { captureId });
+  if (isPersistent) return invoke<VaultSnapshot>("dismiss_capture", { captureId });
   browserSnapshot = {
     ...browserSnapshot,
     captures: browserSnapshot.captures?.map((c) =>
@@ -431,7 +451,7 @@ export async function dismissCapture(
 export async function saveAiConfig(
   config: ProviderConfig,
 ): Promise<VaultSnapshot> {
-  if (isTauri) return invoke<VaultSnapshot>("save_ai_config", { config });
+  if (isPersistent) return invoke<VaultSnapshot>("save_ai_config", { config });
   browserSnapshot = {
     ...browserSnapshot,
     aiConfig: structuredClone(config),
@@ -440,12 +460,12 @@ export async function saveAiConfig(
   return structuredClone(browserSnapshot);
 }
 export async function prepareLocalModel(model: string): Promise<void> {
-  if (!isTauri) throw new Error("请在桌面版下载本地模型；浏览器仅提供临时预览");
+  if (!isPersistent) throw new Error("请在桌面版下载本地模型；浏览器仅提供临时预览");
   return invoke("prepare_local_model", { model });
 }
 
 export async function readCaptureClipboard(): Promise<string> {
-  const text = isTauri
+  const text = isTauri && !isMobile
     ? await invoke<string>("read_capture_clipboard")
     : await navigator.clipboard.readText();
   if (!text.trim()) throw new Error("剪贴板里没有文字");
@@ -455,14 +475,14 @@ export async function readCaptureClipboard(): Promise<string> {
 }
 
 export async function warmLocalModel(config: ProviderConfig): Promise<void> {
-  if (isTauri && config.kind === "local")
+  if (isWindows && config.kind === "local")
     await invoke("warm_local_model", { config });
 }
 
 export async function handleCapture(
   request: CaptureRequest,
 ): Promise<VaultSnapshot> {
-  if (!isTauri) {
+  if (!isPersistent) {
     let page: URL;
     try {
       page = new URL(request.url);
@@ -539,7 +559,7 @@ export async function handleCapture(
 export async function openVaultwarden(reference: string): Promise<void> {
   if (!/^https?:\/\//i.test(reference))
     throw new Error("权威来源必须是 http/https URL");
-  if (!isTauri) {
+  if (!isPersistent) {
     window.open(reference, "_blank", "noopener,noreferrer");
     return;
   }

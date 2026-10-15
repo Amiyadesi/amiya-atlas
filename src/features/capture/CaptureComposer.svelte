@@ -28,7 +28,7 @@
 </script>
 
 <form class="capture-card" class:compact on:submit|preventDefault={submit}>
-  <label class="sr-only" for={id}>告诉 Atlas 一件事</label>
+  <label class="sr-only" for={id}>告诉络笺一件事</label>
   <textarea
     {id}
     bind:this={input}
@@ -36,15 +36,16 @@
     on:keydown={keydown}
     maxlength="10000"
     rows={compact ? 3 : 4}
-    placeholder="比如：Saily 是我的美国备用号码，每个月六块多，暂时保留。"
+    placeholder="比如：今天给 Google One 换了付款卡，用尾号 1234 的那张。"
     disabled={busy || recording || voiceBusy}></textarea>
+  <div class="voice-status-slot">
   {#if recording || voiceBusy}
     <div class="voice-strip" role="status">
       <span class="recording-dot" class:pulsing={recording}></span>
       {#if recording}<span>正在听 · {seconds}s / 60s</span><meter
           min="0"
-          max="0.2"
-          value={level}
+          max="1"
+          value={Math.min(1, level * 16)}
           aria-label="麦克风音量"
         ></meter>
       {:else}<span>{voiceLabel}</span>{/if}
@@ -53,6 +54,7 @@
       >
     </div>
   {/if}
+  </div>
   <div class="capture-footer">
     <div class="capture-tools">
       <button
@@ -78,19 +80,14 @@
         type="button"
         on:click={save}
         disabled={busy || recording || voiceBusy || !text.trim()}
-        title="保存到待确认，暂不调用模型">先存原文</button
+        >先存原文</button
       >
       <button
         class="primary"
         type="submit"
         disabled={busy || recording || voiceBusy || !text.trim()}
-        >{busy ? "正在处理…" : "整理预览"} <span>↗</span></button
+        >{busy ? "正在处理…" : "整理预览"}</button
       >
     </div>
-  </div>
-  <div class="capture-hint">
-    <span>✦ 先存原文不调用模型；整理后等你确认</span><span
-      ><kbd>Ctrl ↵</kbd> 整理 · <kbd>Esc</kbd> 取消录音</span
-    >
   </div>
 </form>

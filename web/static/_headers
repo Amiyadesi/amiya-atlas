@@ -1,0 +1,17 @@
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=()
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'
+/account*
+  Cache-Control: no-store
+/login*
+  Cache-Control: no-store
+/device*
+  Cache-Control: no-store
+/en/account*
+  Cache-Control: no-store
+/en/login*
+  Cache-Control: no-store
+/en/device*
+  Cache-Control: no-store

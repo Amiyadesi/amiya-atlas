@@ -1,5 +1,5 @@
 export type Privacy = "PUBLIC" | "PRIVATE" | "SECRET";
-export type ValueType = "text" | "number" | "boolean" | "date" | "url" | "json";
+export type ValueType = "text" | "number" | "boolean" | "date" | "url" | "json" | "money";
 export type EventType =
   | "EXPIRY"
   | "RENEWAL"
@@ -67,6 +67,11 @@ export interface VaultSnapshot {
   entities: Entity[];
   relations: Relation[];
   events: LifecycleEvent[];
+  ledgerAccounts?: import('../domain/ledger').LedgerAccount[];
+  transactions?: import('../domain/ledger').Transaction[];
+  allocationRules?: import('../domain/ledger').AllocationRule[];
+  financeRecords?: import('../domain/ledger').FinanceRecord[];
+  opaqueRecords?: Array<{kind:string;data:{id:string;[key:string]:unknown}}>;
   captures?: import("../domain/proposal").TextCapture[];
   proposals?: import("../domain/proposal").ProposalRecord[];
   aiConfig?: import("../ai/provider").ProviderConfig;
@@ -76,6 +81,8 @@ export interface VaultStatus {
   exists: boolean;
   unlocked: boolean;
   entityCount: number;
+  deviceUnlockEnabled?: boolean;
+  idleMinutes?: number;
   seedAvailable?: boolean;
   bridgeError?: string;
 }
@@ -129,6 +136,8 @@ export const RELATION_TYPES = [
   "RELATED_TO",
   "OWNS",
   "MANAGED_BY",
+  "INVOICED_TO",
+  "ALLOCATED_TO",
 ] as const;
 
 export const TEMPLATES: Template[] = [
@@ -328,6 +337,12 @@ export const TEMPLATES: Template[] = [
 export function emptySnapshot(): VaultSnapshot {
   return { revision: 0, entities: [], relations: [], events: [] };
 }
+
+for (const template of TEMPLATES.filter(t => ['subscription','server','domain','ai-provider-account'].includes(t.id))) {
+  template.fields.push({key:'fee',valueType:'money',privacy:'PRIVATE',searchable:false},{key:'billing_period',valueType:'text',privacy:'PRIVATE',searchable:false},{key:'avoidable_project',valueType:'text',privacy:'PRIVATE',searchable:false});
+}
+TEMPLATES.push({id:'client',label:'Client',category:'Client',fields:[{key:'contact',valueType:'text',privacy:'PRIVATE',searchable:true}]},
+  {id:'order',label:'Order',category:'Order',fields:[{key:'quote',valueType:'money',privacy:'PRIVATE',searchable:false},{key:'delivery',valueType:'date',privacy:'PRIVATE',searchable:false},{key:'project',valueType:'text',privacy:'PRIVATE',searchable:false}]});
 
 export function nowIso(): string {
   return new Date().toISOString();

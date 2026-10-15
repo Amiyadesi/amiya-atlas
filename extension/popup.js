@@ -8,7 +8,7 @@ let page;
 function send(message) {
   return new Promise((resolve, reject) => chrome.runtime.sendNativeMessage(HOST, message, response => {
     const runtimeError = chrome.runtime.lastError;
-    if (runtimeError) reject(new Error('请打开并解锁 Atlas')); else if (!response?.ok) reject(new Error(response?.error || 'Atlas 连接失败')); else resolve(response.data);
+    if (runtimeError) reject(new Error('请打开并解锁络笺')); else if (!response?.ok) reject(new Error(response?.error || '络笺连接失败')); else resolve(response.data);
   }));
 }
 
@@ -28,7 +28,7 @@ async function load() {
 identityEl.addEventListener('change', () => { captureEl.disabled = !identityEl.value; });
 captureEl.addEventListener('click', async () => {
   captureEl.disabled = true; errorEl.textContent = '';
-  try { await send({ action: 'commit_capture', title: page.title || '', url: page.url, favicon: page.favIconUrl, identity_id: identityEl.value }); captureEl.textContent = '已加入 Atlas'; }
+  try { await send({ action: 'commit_capture', title: page.title || '', url: page.url, favicon: page.favIconUrl, identity_id: identityEl.value }); captureEl.textContent = '已加入络笺'; }
   catch (error) { errorEl.textContent = error.message; captureEl.disabled = false; }
 });
 load();

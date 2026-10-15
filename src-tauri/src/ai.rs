@@ -48,7 +48,7 @@ impl Default for AiConfig {
 }
 impl AiConfig {
     pub fn validate(&self) -> Result<()> {
-        if !["local", "ollama", "openai-compatible"].contains(&self.kind.as_str())
+        if !["local", "ollama", "openai-compatible", "cloud"].contains(&self.kind.as_str())
             || self.model.trim().is_empty()
             || self.model.len() > 200
             || self.api_key.len() > 8192
@@ -56,6 +56,7 @@ impl AiConfig {
         {
             return Err("模型配置无效".into());
         }
+        if self.kind == "cloud" && (self.base_url != crate::cloud::ORIGIN || self.model != "qwen3.7-flash-2026-07-15" || !self.api_key.is_empty()) {return Err("官网云服务使用固定地址，不接受自定义 Key".into());}
         let url = url::Url::parse(&self.base_url).map_err(|_| "模型地址无效")?;
         let loopback = matches!(
             url.host_str(),

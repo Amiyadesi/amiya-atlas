@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
-import { isTauri } from "../../lib/api";
+import { invoke } from "../../lib/runtime";
+import { isPersistent } from "../../lib/runtime";
 import { wavBase64 } from "./recorder";
 export interface VoiceStatus {
   supported: boolean;
@@ -8,7 +8,7 @@ export interface VoiceStatus {
   prerequisite: string | null;
 }
 export async function voiceStatus(): Promise<VoiceStatus> {
-  return isTauri
+  return isPersistent
     ? invoke("voice_status")
     : {
         supported: false,
@@ -34,5 +34,5 @@ export async function transcribeVoice(
   }
 }
 export async function cancelVoice(): Promise<void> {
-  if (isTauri) await invoke("cancel_voice_transcription");
+  if (isPersistent) await invoke("cancel_voice_transcription");
 }

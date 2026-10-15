@@ -1,12 +1,30 @@
 <script lang="ts">
+  import LedgerPage from './features/ledger/LedgerPage.svelte';
+  import MoneyGraph from './features/ledger/MoneyGraph.svelte';
+  import {localLedgerProposal} from './domain/finance-capture';
+  import {monthlyCosts,periodReport,expectedPayments} from './domain/reports';
+  import {dateToday} from './domain/ledger';
+  import {formatMoney} from './domain/money';
+  import Icon from "./lib/Icon.svelte";
   import { onMount, tick } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke, isPersistent, isHttpHost, isWindows, isMobile, isSelfhost, hasWebAccess, setWebAccess } from "./lib/runtime";
+  import SyncSettings from "./features/sync/SyncSettings.svelte";
+  import ServerAuth from "./features/sync/ServerAuth.svelte";
+  import ServerSecurity from "./features/sync/ServerSecurity.svelte";
+  import { emptySync, type SyncStatus } from "./lib/sync";
+  import { selfRequest } from "./lib/selfhost-auth";
+  import CloudSettings from './features/cloud/CloudSettings.svelte';
+  import ManualEditor from './features/capture/ManualEditor.svelte';
+  import { categoryGroup, categoryLabel, eventLabel, RECORD_GROUPS, relationLabel, statusLabel } from './lib/record-labels';
+  import { clearCloudRetries } from './ai/cloud-client';
   import { listen } from "@tauri-apps/api/event";
   import {
     isTauri,
     vaultStatus,
     initializeVault,
     unlockVault,
+    unlockDevice,
+    setDeviceUnlock,
     loadSnapshot,
     lockVault,
     beginTextCapture,
@@ -51,27 +69,39 @@
     cancelVoice,
   } from "./features/voice/api";
 
-  type Page = "Home" | "Memory" | "Explore" | "Inbox" | "Settings";
-  const pages: Page[] = ["Home", "Memory", "Inbox", "Settings"];
+  type Page = "Ledger" | "Home" | "Memory" | "Explore" | "Inbox" | "Settings";
+  const pages: Page[] = ["Home", "Ledger", "Memory", "Explore", "Inbox", "Settings"];
   const labels: Record<Page, string> = {
+    Ledger: "账本",
     Home: "首页",
     Memory: "记忆",
-    Explore: "探索",
+    Explore: "关系图",
     Inbox: "待确认",
     Settings: "设置",
   };
-  const symbols: Record<Page, string> = {
-    Home: "⌂",
-    Memory: "▤",
-    Explore: "◇",
-    Inbox: "▱",
-    Settings: "⚙",
-  };
-  let mode: "loading" | "create" | "unlock" | "ready" = "loading";
+  let mode: "loading" | "access" | "create" | "unlock" | "ready" = "loading";
+  let access = "";
+  let syncStatus: SyncStatus = { ...emptySync };
+  let syncBusy = false;
+  let syncError = "";
   let snapshot: VaultSnapshot = emptySnapshot();
   let page: Page = "Home";
+  let graphMode="relation";
+  const currentMonth=dateToday().slice(0,7);
+  $: homeReport=periodReport(snapshot,`${currentMonth}-01`,`${currentMonth}-31`);
+  $: homeCosts=monthlyCosts(snapshot,`${currentMonth}-01`);
+  $: homePayments=expectedPayments(snapshot,currentMonth);
   let password = "";
   let passwordConfirm = "";
+  let rememberDevice = isWindows;
+  let deviceUnlockEnabled = false;
+  let accountCode = "";
+  let accountMessage = "";
+  let accountTimer: ReturnType<typeof setTimeout> | undefined;
+  let idleMinutes = 0;
+  let recordGroup = "";
+  let editorOpen = false;
+  let editedEntity: Entity | undefined;
   let text = "";
   let query = "";
   let interpretedQuery: { search: string; region: string } | null = null;
@@ -80,6 +110,7 @@
   let parsingId = "";
   let error = "";
   let notice = "";
+  let noticeTimer: ReturnType<typeof setTimeout> | undefined;
   let selectedId = "";
   let rootId = "";
   let previewId = "";
@@ -146,7 +177,7 @@
     snapshot,
     interpretedQuery?.search ?? query,
     interpretedQuery?.region ?? "",
-  );
+  ).filter(entity => !recordGroup || categoryGroup(entity.category) === recordGroup);
   $: selected = snapshot.entities.find(
     (e) => e.id === selectedId && e.privacy !== "SECRET",
   );
@@ -174,13 +205,11 @@
         .map((p) => snapshot.captures?.find((c) => c.id === p.captureId))
         .filter((c): c is TextCapture => !!c)
     : [];
-  $: selectedLocalModel =
-    LOCAL_MODELS.find((m) => m.model === settingsConfig.model) ??
-    LOCAL_MODELS[0];
-
   const readable = (e: unknown) => (e instanceof Error ? e.message : String(e));
   function flash(message: string) {
+    if (noticeTimer) clearTimeout(noticeTimer);
     notice = message;
+    noticeTimer = setTimeout(() => notice = "", 5000);
   }
   function name(id: string) {
     return snapshot.entities.find((e) => e.id === id)?.name ?? "未知记忆";
@@ -200,6 +229,7 @@
   }
   function navigate(next: Page) {
     if (recording || voiceBusy) stopVoice();
+    if (next === "Explore") rootId = selectedId || rootId || snapshot.entities.find(entity => snapshot.relations.some(relation => relation.sourceId === entity.id || relation.targetId === entity.id))?.id || snapshot.entities[0]?.id || "";
     page = next;
     selectedId = "";
     previewId = "";
@@ -211,12 +241,32 @@
     previewId = "";
     error = "";
   }
+  function editRecord(entity?: Entity) {
+    editedEntity = entity;
+    editorOpen = true;
+  }
+  function recordSaved(value: VaultSnapshot, id: string) {
+    if (mode !== "ready") return;
+    snapshot = value;
+    editorOpen = false;
+    editedEntity = undefined;
+    openEntity(id);
+    flash(id ? "已保存" : "已删除");
+  }
+  async function saveLockPolicy() {
+    try { await invoke("set_idle_minutes", { minutes: Number(idleMinutes) }); flash("已保存"); }
+    catch (value) { error = readable(value); }
+  }
   function explore(id: string) {
     selectedId = "";
     rootId = id;
     page = "Explore";
   }
   function configure(kind: ProviderConfig["kind"]) {
+    if(kind==='cloud') {
+      settingsConfig={kind:'cloud',baseUrl:'https://atlas.sayori.org',model:'qwen3.7-flash-2026-07-15',apiKey:'',responseFormat:'json_schema'};
+      connection='';return;
+    }
     settingsConfig =
       kind === "local"
         ? { ...DEFAULT_PROVIDER }
@@ -233,6 +283,9 @@
     connection = "";
   }
   function clearPrivateState() {
+    editorOpen = false;
+    editedEntity = undefined;
+    clearCloudRetries();
     stopVoice();
     quickOpen = false;
     epoch++;
@@ -247,6 +300,8 @@
     passwordConfirm = "";
     config = { ...DEFAULT_PROVIDER };
     settingsConfig = { ...DEFAULT_PROVIDER };
+    syncStatus = { ...emptySync };
+    syncError = "";
     busy = false;
     parsingId = "";
     notice = "";
@@ -256,16 +311,32 @@
     connection = "";
   }
   async function sync() {
-    if (!isTauri || mode !== "ready" || busy) return;
+    if (!isPersistent || mode !== "ready" || busy || syncBusy || document.hidden) return;
     const token = epoch;
     const revision = snapshot.revision;
     try {
       const status = await vaultStatus();
       if (token !== epoch || mode !== "ready") return;
+      deviceUnlockEnabled = Boolean(status.deviceUnlockEnabled);
+      idleMinutes = status.idleMinutes ?? 0;
       if (!status.unlocked) {
         clearPrivateState();
         mode = "unlock";
         return;
+      }
+      syncBusy = true;
+      const settings = await invoke<SyncStatus>("sync_status");
+      if (token !== epoch || mode !== "ready") return;
+      syncStatus = settings;
+      if (settings.automatic && !syncStatus.conflicts.length) {
+        try {
+          const result = await invoke<SyncStatus>("sync_run");
+          if (token !== epoch || mode !== "ready") return;
+          syncStatus = result;
+          syncError = "";
+        } catch (e) {
+          if (token === epoch) syncError = readable(e) === "REMOTE_VAULT_DIFFERENT" ? "远端是另一份记忆库，请在同步设置中导入" : readable(e);
+        }
       }
       const fresh = await loadSnapshot();
       if (
@@ -278,7 +349,35 @@
         snapshot = fresh;
     } catch (e) {
       error = readable(e);
+    } finally {
+      syncBusy = false;
     }
+  }
+  async function boot() {
+    try {
+      if (isHttpHost && !(await hasWebAccess())) { mode = "access"; return; }
+      const deviceCode = isSelfhost ? new URLSearchParams(location.search).get("user_code") : null;
+      if (deviceCode && window.confirm(`允许设备 ${deviceCode} 同步此服务器？`)) { await selfRequest("/api/auth/device?user_code=" + encodeURIComponent(deviceCode)); await selfRequest("/api/auth/device/approve", { userCode: deviceCode }); history.replaceState(null, "", location.pathname); flash("设备已连接"); }
+      const status = await vaultStatus();
+      deviceUnlockEnabled = isWindows && Boolean(status.deviceUnlockEnabled);
+      rememberDevice = isWindows;
+      idleMinutes = status.idleMinutes ?? 0;
+      mode = !status.exists ? "create" : status.unlocked ? "ready" : "unlock";
+      if (!status.unlocked && status.exists && deviceUnlockEnabled) { await enterDevice(); return; }
+      if (status.unlocked) { await refreshSnapshot(); void refreshTools(); }
+    } catch (e) { error = readable(e); mode = isHttpHost ? "access" : "unlock"; }
+  }
+  async function refreshSnapshot() {
+    const token = epoch;
+    const fresh = await loadSnapshot();
+    if (token !== epoch) return;
+    snapshot = fresh;
+    config = { ...(snapshot.aiConfig ?? (isWindows ? DEFAULT_PROVIDER : { ...DEFAULT_PROVIDER, kind: "ollama", baseUrl: "http://localhost:11434" })) };
+    settingsConfig = { ...config };
+    if (isPersistent) syncStatus = await invoke<SyncStatus>("sync_status");
+  }
+  async function enterAccess() {
+    error = ""; setWebAccess(access); access = ""; await boot();
   }
   onMount(() => {
     const unlisteners: Array<() => void> = [];
@@ -305,6 +404,11 @@
       });
     }
     const keydown = (e: KeyboardEvent) => {
+      if (!e.repeat && !e.isComposing && (e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "l") {
+        e.preventDefault();
+        if (mode === "ready") void lock();
+        else if (mode === "unlock" && deviceUnlockEnabled) void enterDevice();
+      }
       if (
         mode === "ready" &&
         (e.ctrlKey || e.metaKey) &&
@@ -338,30 +442,22 @@
     const focus = () => void sync();
     window.addEventListener("keydown", keydown);
     window.addEventListener("focus", focus);
+    window.addEventListener("online", focus);
+    document.addEventListener("visibilitychange", focus);
     const timer = window.setInterval(() => void sync(), 30000);
-    void (async () => {
-      try {
-        const status = await vaultStatus();
-        mode = !status.exists ? "create" : status.unlocked ? "ready" : "unlock";
-        if (status.unlocked) {
-          snapshot = await loadSnapshot();
-          config = { ...(snapshot.aiConfig ?? DEFAULT_PROVIDER) };
-          settingsConfig = { ...config };
-          void refreshTools();
-        }
-      } catch (e) {
-        error = readable(e);
-        mode = "unlock";
-      }
-    })();
+    void boot();
     return () => {
       alive = false;
       epoch++;
       stopVoice();
       unlisteners.forEach((fn) => fn());
       window.clearInterval(timer);
+      if (noticeTimer) clearTimeout(noticeTimer);
+      if (accountTimer) clearTimeout(accountTimer);
       window.removeEventListener("keydown", keydown);
       window.removeEventListener("focus", focus);
+      window.removeEventListener("online", focus);
+      document.removeEventListener("visibilitychange", focus);
     };
   });
   async function enter() {
@@ -385,12 +481,75 @@
       passwordConfirm = "";
       config = { ...(snapshot.aiConfig ?? DEFAULT_PROVIDER) };
       settingsConfig = { ...config };
+      if (isWindows && rememberDevice !== deviceUnlockEnabled) {
+        await setDeviceUnlock(rememberDevice);
+        deviceUnlockEnabled = rememberDevice;
+      }
       void refreshTools();
+      await refreshSnapshot();
     } catch (e) {
       error = readable(e);
     } finally {
       busy = false;
     }
+  }
+  async function signInAccount() {
+    if (busy || accountCode) return;
+    busy = true; error = ""; accountMessage = "";
+    try {
+      const result = await invoke<{ userCode: string }>("cloud_device_start");
+      accountCode = result.userCode;
+      accountTimer = setTimeout(() => void pollAccount(), 5000);
+    } catch (value) { error = readable(value); }
+    finally { busy = false; }
+  }
+  async function pollAccount() {
+    try {
+      const result = await invoke<{ pending?: boolean }>("cloud_device_poll");
+      if (result.pending) { accountTimer = setTimeout(() => void pollAccount(), 5000); return; }
+      accountCode = "";
+      await boot();
+      accountMessage = mode === "ready" ? "" : "官网账号已登录。首次打开需解锁本机记忆库。";
+    } catch (value) { accountCode = ""; error = readable(value); }
+  }
+  async function enterDevice() {
+    if (busy) return;
+    busy = true;
+    error = "";
+    try {
+      snapshot = await unlockDevice();
+      mode = "ready";
+      password = "";
+      passwordConfirm = "";
+      config = { ...(snapshot.aiConfig ?? DEFAULT_PROVIDER) };
+      settingsConfig = { ...config };
+      if (rememberDevice !== deviceUnlockEnabled) {
+        await setDeviceUnlock(rememberDevice);
+        deviceUnlockEnabled = rememberDevice;
+      }
+      void refreshTools();
+    } catch (e) {
+      if (mode !== "ready") mode = "unlock";
+      error = readable(e);
+    } finally { busy = false; }
+  }
+  async function toggleDeviceUnlock() {
+    if (busy) return;
+    if (!deviceUnlockEnabled && !window.confirm("开启自动解锁？使用当前 Windows 账户的人都能打开记忆库。")) return;
+    busy = true;
+    error = "";
+    try {
+      await setDeviceUnlock(!deviceUnlockEnabled);
+      deviceUnlockEnabled = !deviceUnlockEnabled;
+      rememberDevice = deviceUnlockEnabled;
+      flash(deviceUnlockEnabled ? "已开启自动解锁" : "已关闭自动解锁");
+    } catch (e) { error = readable(e); }
+    finally { busy = false; }
+  }
+  async function openCloudAccount() {
+    navigate("Settings");
+    await tick();
+    document.getElementById("cloud-account")?.scrollIntoView({ block: "start" });
   }
   async function lock() {
     try {
@@ -411,7 +570,7 @@
       const current = await loadSnapshot();
       if (token !== epoch || mode !== "ready") return;
       snapshot = current;
-      const content = await createProvider(config).parseCapture(
+      const content = localLedgerProposal(capture.rawText,snapshot) ?? await createProvider(config).parseCapture(
         capture.rawText,
         { snapshot, now: new Date().toISOString() },
       );
@@ -439,6 +598,15 @@
       }
     }
   }
+  async function stageFinance(raw:string,proposal:Proposal) {
+    const before=new Set(snapshot.captures?.map(c=>c.id));
+    snapshot=await beginTextCapture(raw,'text');
+    const capture=snapshot.captures?.find(c=>!before.has(c.id));
+    if(!capture)throw new Error('原文未保存');
+    snapshot=await stageProposal(capture.id,proposal,'本地账本');
+    previewId=snapshot.proposals?.find(p=>p.captureId===capture.id&&p.status==='PENDING')?.id??'';
+    navigate('Inbox');
+  }
   async function capture(parseNow: boolean) {
     if (!text.trim() || busy || recording || voiceBusy) return;
     busy = true;
@@ -457,7 +625,7 @@
       navigate("Inbox");
       notice = "";
       if (parseNow) await parseCapture(input, true);
-      else flash("原文已保存。随时可以在待确认中开始整理。");
+      else flash("已存入待确认");
     } catch (e) {
       if (token === epoch) {
         error = readable(e);
@@ -483,7 +651,7 @@
         snapshot.entities.some((e) => e.id === id && e.privacy !== "SECRET"),
       );
       if (rememberedId) openEntity(rememberedId);
-      else navigate("Memory");
+      else navigate(content.financeActions?.length?"Ledger":"Memory");
     } catch (failure) {
       // Refresh after a rejected commit so the stale preview offers a real retry.
       if (token === epoch) snapshot = await loadSnapshot();
@@ -505,7 +673,7 @@
       selectedId = "";
       previewId = id;
       page = "Inbox";
-      flash("已恢复确认前的记忆。这份提案回到待确认，可以修改后再保存。");
+      flash("已撤销，提案已回到待确认");
     } catch (e) {
       if (token === epoch) error = readable(e);
     } finally {
@@ -521,7 +689,7 @@
       if (token !== epoch) return;
       snapshot = next;
       previewId = "";
-      flash("修改已保留，提案仍在待确认区。");
+      flash("提案已保存");
     } finally {
       if (token === epoch) busy = false;
     }
@@ -535,7 +703,7 @@
       if (token !== epoch) return;
       snapshot = next;
       previewId = "";
-      flash("已移出待确认区，原文仍保留。");
+      flash("已移出待确认");
     } catch (e) {
       if (token === epoch) error = readable(e);
     } finally {
@@ -722,7 +890,7 @@
         stopVoice();
         error =
           e instanceof DOMException && e.name === "NotAllowedError"
-            ? "麦克风未获授权。请允许 Atlas 使用麦克风，或在输入框使用 Win H。"
+            ? "麦克风未获授权。请允许络笺使用麦克风，或在输入框使用 Win H。"
             : `无法开始录音：${readable(e)}`;
       }
     }
@@ -780,7 +948,7 @@
       await prepareVoice();
       if (token === epoch) {
         voiceInfo = await voiceStatus();
-        flash("语音已准备好。回首页点「语音」，或按 Ctrl Alt R。");
+        flash("语音已就绪");
       }
     } catch (e) {
       if (token === epoch) error = readable(e);
@@ -797,7 +965,8 @@
       error = readable(e);
     }
   }
-  function download(filename: string, payload: string) {
+  async function download(filename: string, payload: string) {
+    if (isTauri) { await invoke("save_export_file", { filename, payload }); return; }
     const url = URL.createObjectURL(
       new Blob([payload], { type: "application/json" }),
     );
@@ -809,14 +978,14 @@
   }
   async function backup() {
     try {
-      download("atlas-encrypted-backup.json", await exportBackup());
+      await download("relakeep-encrypted-backup.json", await exportBackup());
     } catch (e) {
       error = readable(e);
     }
   }
   async function redacted() {
     try {
-      download("atlas-redacted.json", await exportRedacted(true));
+      await download("relakeep-redacted.json", await exportRedacted(true));
     } catch (e) {
       error = readable(e);
     }
@@ -827,12 +996,30 @@
     if (!item) return;
     error = "";
     try {
-      if (item.size > 32 * 1024 * 1024) throw new Error("文件超过 32 MiB");
-      const payload = await item.text();
+      if (item.size > 128 * 1024 * 1024) throw new Error("文件超过 128 MiB");
+      await applyFile(await item.text(), kind);
+    } catch (e) { error = readable(e); }
+    finally { input.value = ""; }
+  }
+  async function pickFile(kind: "import" | "restore") {
+    try { const payload = await invoke<string | null>("read_import_file"); if (payload) await applyFile(payload, kind); }
+    catch (e) { error = readable(e); }
+  }
+  async function restoreServer() {
+    try { const response = await fetch("/api/sync"); if (!response.ok) throw new Error(response.status === 404 ? "服务器尚无同步副本" : "读取同步副本失败"); await applyFile(await response.text(), "restore"); }
+    catch (e) { error = readable(e); }
+  }
+  async function applyFile(payload: string, kind: "import" | "restore") {
+    error = "";
+    try {
       if (kind === "restore") {
-        const secret = prompt("输入这份加密备份的主密码");
+        const secret = prompt("恢复将替换当前记忆库。输入备份主密码以继续。");
         if (!secret) return;
         snapshot = await importBackup(payload, secret);
+        deviceUnlockEnabled = false;
+        rememberDevice = false;
+        mode = "ready";
+        await refreshSnapshot();
         config = { ...(snapshot.aiConfig ?? DEFAULT_PROVIDER) };
         settingsConfig = { ...config };
         flash("加密备份已恢复");
@@ -845,8 +1032,6 @@
       }
     } catch (e) {
       error = readable(e);
-    } finally {
-      input.value = "";
     }
   }
   async function commitImport() {
@@ -867,21 +1052,29 @@
 {#if mode !== "ready"}
   <main class="lock-screen">
     <section class="lock-card">
-      <div class="brand-mark">✦</div>
-      <p class="eyebrow">AMIYA ATLAS</p>
+      <img class="brand-mark" src="/mark.svg" alt="" width="44" height="44" />
+      <p class="lock-brand">络笺 <span>Relakeep</span></p>
       <h1>
         {mode === "loading"
-          ? "正在打开你的 Atlas…"
+          ? "正在打开…"
+          : mode === "access" ? "登录"
           : mode === "create"
-            ? "给记忆一个安全的家。"
-            : "欢迎回来。"}
+            ? "创建记忆库"
+            : "解锁记忆库"}
       </h1>
-      <p class="muted">你只管说，Atlas 替你记住。</p>
-      {#if mode !== "loading"}<form on:submit|preventDefault={enter}>
+      {#if mode === "unlock" && deviceUnlockEnabled}
+        <button class="primary device-unlock-button" disabled={busy} on:click={enterDevice}>使用这台电脑解锁 <kbd>Ctrl Shift L</kbd></button>
+        <p class="lock-divider">或使用主密码</p>
+      {/if}
+      {#if mode === "access"}
+        {#if isSelfhost}<ServerAuth authenticated={boot} />{:else}<form on:submit|preventDefault={enterAccess}><label>访问口令<input type="password" bind:value={access} required autocomplete="off" /></label><button class="primary">进入</button></form>{/if}
+      {:else if mode !== "loading"}<form on:submit|preventDefault={enter}>
           <label
             >主密码<input
               type="password"
               bind:value={password}
+              required
+              minlength={mode === "create" ? 12 : undefined}
               autocomplete={mode === "create"
                 ? "new-password"
                 : "current-password"}
@@ -890,21 +1083,27 @@
               >再输入一次<input
                 type="password"
                 bind:value={passwordConfirm}
+                required
                 autocomplete="new-password"
               /></label
             >
-            <p class="muted">
-              至少 12 个字符。你的记忆保存在本机的加密数据库中。
-            </p>{/if}<button class="primary" disabled={busy}
+            {/if}
+          {#if isWindows}<label class="check-label"><input type="checkbox" bind:checked={rememberDevice} />记住这台电脑</label>{/if}
+          <button class="primary" disabled={busy}
             >{busy
               ? "正在打开…"
               : mode === "create"
-                ? "创建我的 Atlas"
+                ? "创建"
                 : "解锁"}</button
           >
         </form>{/if}{#if error}<div class="error" role="alert">
           {error}
         </div>{/if}
+      {#if isTauri && mode !== "loading"}<button class="secondary lock-cloud-link" disabled={busy || !!accountCode} on:click={signInAccount}>登录官网账户</button>{#if accountCode}<p class="device-code" role="status">{accountCode}</p>{/if}{#if accountMessage}<p role="status">{accountMessage}</p>{/if}{/if}
+      {#if isPersistent && (mode === "create" || mode === "unlock")}
+        {#if isSelfhost}<button class="secondary" on:click={restoreServer}>导入服务器同步副本</button>{/if}
+        {#if isTauri}<button class="text-button lock-cloud-link" on:click={() => pickFile("restore")}>导入加密备份</button>{:else}<label class="file-button secondary">导入加密备份<input type="file" accept=".json" on:change={(e) => file(e, "restore")} /></label>{/if}
+      {/if}
     </section>
   </main>
 {:else}
@@ -914,22 +1113,20 @@
         class="brand"
         href="#home"
         on:click|preventDefault={() => navigate("Home")}
-        ><span class="brand-mark">✦</span><span
-          >Atlas<small>by Amiya</small></span
+        ><img class="brand-mark" src="/mark.svg" alt="" width="32" height="32" /><span
+          >络笺<small>Relakeep</small></span
         ></a
       >
-      <p class="sidebar-label">你的数字世界</p>
+
       <nav aria-label="主导航">
         {#each pages as item}<button
-            class:active={page === item ||
-              (page === "Explore" && item === "Memory")}
-            aria-current={page === item ||
-            (page === "Explore" && item === "Memory")
+            class:active={page === item}
+            aria-current={page === item
               ? "page"
               : undefined}
             aria-label={labels[item]}
             on:click={() => navigate(item)}
-            ><span class="nav-symbol">{symbols[item]}</span><span
+            ><span class="nav-symbol"><Icon name={item} /></span><span
               >{labels[item]}</span
             >{#if item === "Inbox" && pending.length}<span class="count"
                 >{pending.length}</span
@@ -939,41 +1136,36 @@
       <div class="sidebar-bottom">
         <div class="local-label">
           <span></span>{config.kind === "openai-compatible"
-            ? "使用你选择的远程模型"
-            : "本地模型 · 本机保存"}
+            ? "自带 API"
+            : config.kind === "cloud" ? "官网云服务" : "本地模型"}
         </div>
-        <button class="text-button" on:click={lock}>锁定记忆库 ↗</button>
+        <button class="sidebar-account" on:click={openCloudAccount}><span class="account-avatar"><Icon name="Account" /></span><span>官网账户</span></button>
+        <button class="text-button" on:click={lock}>锁定 <kbd>Ctrl Shift L</kbd></button>
       </div>
     </aside>
     <main class="main-area">
-      <header class="topbar">
-        <span>我的 Atlas <span class="slash">/</span> {labels[page]}</span><span
-          class="pill"
-          >{isTauri
-            ? "PRIVATE BY DEFAULT"
-            : "临时浏览器预览 · 刷新后重置"}</span
-        >
-      </header>
+      {#if !isPersistent}<header class="topbar"><span role="status">浏览器预览 · 刷新会清空数据</span></header>{/if}
       <div class="page-content">
-        {#if lastUndo}<div class="commit-feedback" role="status">
-            <span>最近一次确认已应用 · 原文已保留</span><button
+        {#if lastUndo && !error && !notice}<div class="commit-feedback" role="status">
+            <span>已保存</span><button
               class="secondary"
               disabled={busy || recording || voiceBusy}
               on:click={undoLastConfirmation}>撤销这次变更</button
             >
           </div>{/if}
         {#if error}<div class="error" role="alert">
-            {error}
-          </div>{/if}{#if notice}<div class="notice" role="status">
+            {error}<button class="text-button" aria-label="关闭错误提示" on:click={() => error = ""}>×</button>
+          </div>{:else if notice}<div class="notice" role="status">
             {notice}<button aria-label="关闭提示" on:click={() => (notice = "")}
               >×</button
             >
           </div>{/if}
         {#if page === "Home"}
+          <div class="home-workbench">
+          <section class="recording-workspace">
           <section class="home-intro">
-            <p class="eyebrow">LESS TO REMEMBER. MORE TO CREATE.</p>
-            <h1>今天要告诉 Atlas 什么？</h1>
-            <p>账号、项目、一次决定。说出来，让它们有迹可循。</p>
+            <h1>随手记</h1>
+            <button class="secondary" on:click={() => editRecord()}>＋ 手动记录</button>
           </section>
           <CaptureComposer
             bind:text
@@ -991,13 +1183,9 @@
             {microphone}
             cancelRecording={stopVoice}
           />
-          <div class="quick-entry-hint">
-            <button class="text-button" on:click={() => openQuickCapture()}
-              >随手记录 <kbd>Ctrl Shift Space</kbd></button
-            ><span>也可以用系统听写 <kbd>Win H</kbd></span>
-          </div>
+          {#if snapshot.ledgerAccounts?.length || homeCosts.rows.length}<button class="home-ledger-summary" on:click={()=>navigate('Ledger')}><span>本月支出<strong>{homeReport.expense.map(formatMoney).join(' · ')||'—'}</strong></span><span>本月收入<strong>{homeReport.income.map(formatMoney).join(' · ')||'—'}</strong></span><span>固定月成本<strong>{homeCosts.totals.map(formatMoney).join(' · ')||'—'}</strong></span><span>闲置容量<strong>{homeReport.idle.map(formatMoney).join(' · ')||'—'}</strong></span><span>即将扣费<strong>{homePayments.filter(p=>!p.actual).length} 项</strong></span></button>{/if}
           <div class="example-row">
-            <span>试着告诉它</span
+            <span>示例</span
             >{#each ["一个号码", "一项订阅", "一次注册"] as label, i}<button
                 class="example-chip"
                 disabled={busy || recording || voiceBusy}
@@ -1005,61 +1193,57 @@
                   text = samples[i];
                   inputType = "text";
                   captureInput?.focus();
-                }}>{label} ＋</button
+                }}>{label}</button
               >{/each}
           </div>
+          </section>
           <section class="recent-section">
             <div class="section-heading">
               <div>
-                <p class="eyebrow">YOUR MEMORY, AT A GLANCE</p>
                 <h2>最近记住</h2>
               </div>
               <button class="text-button" on:click={() => navigate("Memory")}
-                >全部记忆 ↗</button
+                >查看全部</button
               >
             </div>
-            {#if recent.length}<div class="memory-grid">
-                {#each recent.slice(0, 3) as entity}<button
-                    class="memory-card"
+            {#if recent.length}<div class="recent-list">
+                {#each recent.slice(0, 6) as entity}<button
+                    class="recent-row"
                     on:click={() => openEntity(entity.id)}
-                    ><div class="memory-card-top">
-                      <span class="entity-icon"
+                    ><span class="entity-icon"
                         >{entity.name.slice(0, 1).toUpperCase()}</span
-                      ><span class="muted">↗</span>
-                    </div>
-                    <strong>{entity.name}</strong><span>{entity.category}</span>
-                    <div class="memory-card-meta">
+                      ><span class="recent-name"><strong>{entity.name}</strong><small>{categoryLabel(entity.category)}</small></span>
+                    <span class="recent-meta">
                       {entity.fields.find(
                         (f) =>
                           ["region", "country", "provider"].includes(f.key) &&
                           f.privacy !== "SECRET",
-                      )?.value ?? "已确认的记忆"}
-                    </div></button
+                      )?.value ?? ""}
+                    </span><span class="recent-date">{date(entity.updatedAt)}</span></button
                   >{/each}
               </div>{:else}<div class="empty-state">
-                从第一句话开始。记忆会慢慢连成你的数字世界。
+                暂无记忆
               </div>{/if}
           </section>
-          <div class="home-bottom">
+          <aside class="home-agenda">
             <section class="panel">
               <div class="section-heading">
                 <h2>待确认 <span class="count">{pending.length}</span></h2>
                 <button class="text-button" on:click={() => navigate("Inbox")}
-                  >查看 ↗</button
+                  >打开</button
                 >
               </div>
               {#if pending.length}<p class="muted">
                   {pending[0].rawText.slice(0, 100)}
                 </p>{:else}<p class="muted">
-                  都整理好了。没有待确认的内容。
+                  没有待确认的记录。
                 </p>{/if}
             </section>
             <section class="panel">
               <div class="section-heading">
                 <h2>即将处理</h2>
-                <span class="muted">LIFECYCLE</span>
               </div>
-              {#if upcoming.length}{#each upcoming.slice(0, 2) as event}<button
+              {#if upcoming.length}{#each upcoming.slice(0, 5) as event}<button
                     class="event-row"
                     on:click={() => openEntity(event.entityId)}
                     ><span>{name(event.entityId)}</span><span
@@ -1070,9 +1254,11 @@
                           : "待处理"}</span
                     ></button
                   >{/each}{:else}<p class="muted">
-                  有时间安排时，Atlas 会记在这里。
+                  暂无到期或续费提醒。
                 </p>{/if}
             </section>
+            <p class="agenda-shortcut"><kbd>Ctrl Shift Space</kbd><span>随时唤起记录</span></p>
+          </aside>
           </div>
         {:else if page === "Inbox"}
           {#if preview && previewCapture}<ProposalPreview
@@ -1085,9 +1271,7 @@
               onLater={later}
               onRetry={() => parseCapture(previewCapture!)}
             />{:else}<div class="page-heading">
-              <p class="eyebrow">YOUR WORDS, WAITING TO BECOME MEMORY</p>
               <h1>待确认</h1>
-              <p>原文已经保留。整理后检查变更，确认才会写入记忆。</p>
             </div>
             {#if pending.length}<div class="inbox-list">
                 {#each pending as input}{@const proposal =
@@ -1098,10 +1282,10 @@
                     <div class="section-heading">
                       <span class="pill" role="status"
                         >{parsingId === input.id
-                          ? "原文已保存 · 正在整理…"
+                          ? "正在整理…"
                           : proposal
                             ? "等待确认"
-                            : "原文已保存 · 待整理"}</span
+                            : "待整理"}</span
                       ><span class="muted"
                         >{input.inputType === "voice"
                           ? "语音转写 · "
@@ -1136,24 +1320,21 @@
               </div>{:else}<div class="empty-state">
                 <span class="empty-spark">✦</span>
                 <h2>没有待确认的内容</h2>
-                <p>回首页说一件想记住的事。</p>
                 <button class="primary" on:click={() => navigate("Home")}
-                  >记第一句话</button
+                  >开始记录</button
                 >
               </div>{/if}{/if}
         {:else if page === "Memory"}
           {#if selected}<div class="detail-header">
               <button class="text-button" on:click={() => (selectedId = "")}
                 >← 返回记忆列表</button
-              ><button class="primary" on:click={() => explore(selected.id)}
-                >探索关联 ◇</button
-              >
+              ><div class="button-row"><button class="secondary" on:click={() => editRecord(selected)}>编辑</button><button class="primary" on:click={() => explore(selected.id)}>关系图</button></div>
             </div>
             <article class="detail-card">
-              <span class="pill">{selected.category}</span>
+              <span class="pill">{categoryLabel(selected.category)}</span>
               <h1>{selected.name}</h1>
               <p class="muted">
-                {selected.status} · 最近更新 {date(selected.updatedAt)}
+                {statusLabel(selected.status)} · 最近更新 {date(selected.updatedAt)}
               </p>
               <dl class="detail-fields">
                 {#each selected.fields.filter((f) => f.privacy !== "SECRET") as field}<div
@@ -1176,7 +1357,7 @@
                       )}
                     ><span
                       >{relation.sourceId === selected.id ? "→" : "←"}
-                      {relation.type}</span
+                      {relationLabel(relation.type)}</span
                     ><strong
                       >{name(
                         relation.sourceId === selected.id
@@ -1185,7 +1366,7 @@
                       )}</strong
                     ></button
                   >{/each}{:else}<p class="muted">
-                  还没有已确认的关联。
+                  暂无关联
                 </p>{/if}{#if snapshot.events.some((e) => e.entityId === selected.id)}<h2
                 >
                   生命周期
@@ -1193,7 +1374,7 @@
                 {#each snapshot.events.filter((e) => e.entityId === selected.id) as event}<div
                     class="event-detail"
                   >
-                    <strong>{date(event.dueAt)} · {event.type}</strong><span
+                    <strong>{date(event.dueAt)} · {eventLabel(event.type)}</strong><span
                       >{event.policy === "DO_NOT_RENEW"
                         ? "不续费"
                         : event.policy}</span
@@ -1211,10 +1392,9 @@
                     </footer>
                   </blockquote>{/each}{/if}
             </article>{:else}<div class="page-heading">
-              <p class="eyebrow">A WORLD YOU CAN COME BACK TO</p>
-              <h1>你的记忆</h1>
-              <p>输入关键词即可筛选。也可以写一句话，点击「理解问题」。</p>
+              <h1>你的记忆</h1><button class="primary" on:click={() => editRecord()}>＋ 新建记录</button>
             </div>
+            <div class="record-filters" aria-label="记录分类"><button class:chosen={!recordGroup} on:click={() => recordGroup = ""}>全部</button>{#each RECORD_GROUPS as group}<button class:chosen={recordGroup === group.label} on:click={() => recordGroup = group.label}>{group.label}</button>{/each}</div>
             <div class="search-box" role="search" aria-label="查找已确认的记忆">
               <span>⌕</span><input
                 bind:value={query}
@@ -1245,11 +1425,10 @@
                 筛选：{interpretedQuery.search ||
                   "全部名称"}{interpretedQuery.region
                   ? ` · 地区 ${interpretedQuery.region}`
-                  : ""}。结果来自已确认的记忆。
+                  : ""}
               </p>{/if}
             <div class="list-heading">
-              <span>{results.length} 条记忆</span><span>仅显示已确认的内容</span
-              >
+              <span>{results.length} 条记忆</span>
             </div>
             {#if results.length}<div class="entity-list">
                 {#each results as entity}<button
@@ -1260,7 +1439,7 @@
                     >
                     <div>
                       <strong>{entity.name}</strong><small
-                        >{entity.category} · {entity.status}</small
+                        >{categoryLabel(entity.category)} · {statusLabel(entity.status)}</small
                       >
                     </div>
                     <span>↗</span></button
@@ -1268,14 +1447,14 @@
               </div>{:else}<div class="empty-state">
                 没有找到相关记忆。试试名称、地区或备注中的关键词。
               </div>{/if}{/if}
+        {:else if page === "Ledger"}
+          <LedgerPage {snapshot} {config} saved={next=>snapshot=next} stage={stageFinance} edit={entity=>editRecord(entity)} />
         {:else if page === "Explore"}
           <button class="text-button" on:click={() => openEntity(rootId)}
             >← 返回记忆详情</button
           >
           <div class="page-heading">
-            <p class="eyebrow">FOLLOW THE CONNECTIONS</p>
-            <h1>探索你的数字世界</h1>
-            <p>从一个记忆开始，按需展开它的关联。</p>
+            <h1>关系图</h1><div class="button-row"><button class="secondary" on:click={()=>graphMode="relation"}>关系</button><button class="secondary" on:click={()=>graphMode="money"}>金钱</button></div>
           </div>
           <label class="root-picker"
             >从这里开始<select bind:value={rootId}
@@ -1284,44 +1463,40 @@
                   value={entity.id}>{entity.name}</option
                 >{/each}</select
             ></label
-          >{#if rootId}<ExploreCanvas
+          >{#if graphMode==="money"}<MoneyGraph {snapshot} {rootId} month={currentMonth} onOpen={openEntity}/>{:else if rootId}<ExploreCanvas
               {snapshot}
               {rootId}
               onOpen={openEntity}
             />{:else}<div class="empty-state">
-              先选择一个记忆，画布只会显示与它相关的节点。
+              选择一个记忆
             </div>{/if}
         {:else if page === "Settings"}
           <div class="page-heading">
-            <p class="eyebrow">MAKE ATLAS FEEL LIKE YOURS</p>
             <h1>设置</h1>
-            <p>默认留在本机。也可以连接你选择的模型。</p>
           </div>
           <section class="panel settings-panel">
-            <h2>理解你的模型</h2>
+            {#if isWindows}<div class="section-heading"><h2>打开与锁定</h2></div>
+            <div class="preference-row"><strong>记住这台电脑</strong><button class="preference-switch" class:enabled={deviceUnlockEnabled} role="switch" aria-checked={deviceUnlockEnabled} aria-label="记住这台电脑" on:click={toggleDeviceUnlock} disabled={busy || !isTauri}><span></span></button></div>
+            <div class="preference-row"><strong>锁定 / 解锁</strong><kbd>Ctrl Shift L</kbd></div>{:else}<div class="section-heading"><h2>记忆库</h2></div><button class="secondary" on:click={lock}>锁定</button>{/if}
+          </section>
+          {#if isPersistent}<section class="panel settings-panel"><label class="preference-row"><strong>自动锁定</strong><select bind:value={idleMinutes} on:change={saveLockPolicy}><option value={0}>不自动锁定</option><option value={5}>5 分钟</option><option value={15}>15 分钟</option><option value={30}>30 分钟</option><option value={60}>1 小时</option></select></label></section>{/if}
+          {#if isPersistent}<SyncSettings bind:status={syncStatus} changed={refreshSnapshot} />{/if}
+          {#if syncError}<p class="error" role="alert">{syncError}</p>{/if}
+          {#if isSelfhost}<ServerSecurity />{/if}
+          <section id="cloud-account" class="panel settings-panel">
+            {#if isTauri}<CloudSettings changed={async()=>{snapshot=await loadSnapshot();}} />{:else}<h2>官网账户</h2><a class="secondary" href="https://atlas.sayori.org/login" target="_blank" rel="noreferrer">登录</a>{/if}
+          </section>
+          <section class="panel settings-panel">
+            <h2>模型</h2>
             <div class="provider-options">
-              {#each [["local", "Atlas Local", "默认 · 本机私密"], ["ollama", "Ollama", "使用已有本地服务"], ["openai-compatible", "OpenAI Compatible", "自定义 URL / Key / Model"]] as [kind, title, subtitle]}<button
+              {#each [["local", "本地模型"], ["ollama", "Ollama"], ["openai-compatible", "自带 API Key"], ["cloud", "官网云服务"]].filter(([kind]) => (kind !== "local" || isWindows) && (kind !== "cloud" || isTauri)) as [kind, title]}<button
                   class:chosen={settingsConfig.kind === kind}
                   disabled={modelBusy}
                   on:click={() => configure(kind as ProviderConfig["kind"])}
-                  ><strong>{title}</strong><small>{subtitle}</small></button
+                  ><strong>{title}</strong></button
                 >{/each}
             </div>
-            {#if settingsConfig.kind === "local"}<div class="local-model">
-                <span class="model-monogram">Q</span>
-                <div>
-                  <h3>
-                    {selectedLocalModel.name} · {selectedLocalModel.label}
-                  </h3>
-                  <p>
-                    模型{selectedLocalModel.size}。首次使用另需下载运行时约 1.5
-                    GB，解压后需要更多空间。
-                  </p>
-                  <p class="muted">
-                    自动配置，关闭思考模式。输入在本机解析，下载完成后可离线使用。
-                  </p>
-                </div>
-              </div>
+            {#if settingsConfig.kind === "local" && isWindows}
               <div class="model-options" aria-label="本地模型选择">
                 {#each LOCAL_MODELS as model}<button
                     class:chosen={settingsConfig.model === model.model}
@@ -1360,19 +1535,16 @@
                 {#if progress.total}<progress
                     value={progress.completed}
                     max={progress.total}
-                  ></progress>{/if}{/if}{#if !isTauri}<p class="muted">
-                  一键准备在 Windows x64 桌面版中使用。浏览器预览可连接已有
-                  Ollama 服务。
-                </p>{/if}{:else}<div class="provider-form">
+                  ></progress>{/if}{/if}{:else if settingsConfig.kind !== "cloud"}<div class="provider-form">
                 <label
-                  >Base URL<input
+                  >接口地址<input
                     bind:value={settingsConfig.baseUrl}
                     placeholder={settingsConfig.kind === "ollama"
                       ? "http://localhost:11434"
                       : "https://your-provider.example/v1"}
                   /></label
                 ><label
-                  >Model<input
+                  >模型名称<input
                     bind:value={settingsConfig.model}
                     placeholder="模型名称"
                   /></label
@@ -1386,15 +1558,11 @@
                     >兼容格式<select bind:value={settingsConfig.responseFormat}
                       ><option value="json_object">JSON Object（通用）</option
                       ><option value="json_schema">JSON Schema</option><option
-                        value="prompt">仅提示词约束</option
+                        value="prompt">文本</option
                       ></select
                     ></label
                   >
-                  <p class="muted">
-                    选择远程模型后，输入原文及最多 12 个相关实体的
-                    ID、名称、类型、状态会发送到这个地址。删除或解绑时还会包含相关字段名称、关联及提醒信息。
-                    已有字段值与历史原文不会发送。API Key 在桌面加密保存。
-                  </p>{/if}
+                  {/if}
               </div>
               <button class="secondary" on:click={testConnection}
                 >检查连接</button
@@ -1409,26 +1577,19 @@
               >
             </div>
           </section>
-          <section class="panel settings-panel" id="voice-settings">
-            <p class="eyebrow">TELL ATLAS</p>
+          {#if isWindows}<section class="panel settings-panel" id="voice-settings">
             <h2>语音输入</h2>
-            <p>Whisper Small Q5_1 · 多语言 · 本机转写</p>
-            <p class="muted">
-              首次下载约 190 MB 模型和 9 MB
-              运行时。说完会回到可编辑文字，再由当前模型整理成提案。Atlas
-              的录音不会加入记忆或发送到云端。
-            </p>
             <div class="button-row">
               <button
                 class="primary"
                 disabled={!voiceInfo.supported || voiceInstalling}
                 on:click={installVoice}
               >
-                {voiceInstalling
+                {!voiceInfo.supported ? "当前设备不支持语音" : voiceInstalling
                   ? "正在准备语音…"
                   : voiceInfo.ready
                     ? "语音已就绪"
-                    : "下载并准备语音模型"}</button
+                    : "下载语音模型（约 199 MB）"}</button
               >
               <label class="voice-language"
                 >转写语言<select bind:value={voiceLanguage}
@@ -1463,16 +1624,8 @@
                   value={voiceProgress.completed}
                   max={voiceProgress.total}
                 ></progress>{/if}{/if}
-            {#if !voiceInfo.supported}<p class="muted">
-                Atlas 录音转写目前在 Windows x64
-                桌面版使用。输入框也可搭配操作系统听写；Windows 为 Win H。
-              </p>{/if}
-            <p class="muted">
-              如果记忆模型使用远程服务，点击「整理预览」后会发送转写文字；语音转写本身始终在本机运行。
-            </p>
-          </section>
-          <section class="panel settings-panel">
-            <p class="eyebrow">A THOUGHT, ONE SHORTCUT AWAY</p>
+          </section>{/if}
+          {#if !isMobile}<section class="panel settings-panel">
             <h2>快捷记录</h2>
             <div class="shortcut-list">
               <div>
@@ -1495,42 +1648,33 @@
                 >
                   {shortcut.key} 未能注册，可能被其他应用占用。仍可点击首页入口。
                 </p>{/each}
-            {:else}<p class="muted">
-                浏览器预览中，快捷键在当前页面内有效。桌面版运行时支持全局唤起；关闭
-                Atlas 后不生效。
-              </p>{/if}
-            <p class="muted">
-              剪贴板只在你按快捷键或点击「粘贴」时读取。锁定时先解锁，再开始记录。
-            </p>
-          </section>
+            {/if}
+          </section>{/if}
           <section class="panel settings-panel">
             <h2>记忆与备份</h2>
-            <p class="muted">
-              桌面版使用原有加密 SQLite。旧实体和关系仍能打开。
-            </p>
             <div class="button-row">
-              <button class="secondary" on:click={backup} disabled={!isTauri}
+              <button class="secondary" on:click={backup} disabled={!isPersistent}
                 >导出加密备份</button
-              ><label class="file-button secondary"
+              >{#if isTauri}<button class="secondary" on:click={() => pickFile("restore")}>恢复加密备份</button>{:else}<label class="file-button secondary"
                 >恢复加密备份<input
                   type="file"
                   accept=".json"
                   on:change={(e) => file(e, "restore")}
-                  disabled={!isTauri}
+                  disabled={!isPersistent}
                 /></label
-              ><button class="secondary" on:click={redacted}
+              >{/if}<button class="secondary" on:click={redacted}
                 >导出脱敏清单</button
-              ><label class="file-button secondary"
+              >{#if isTauri}<button class="secondary" on:click={() => pickFile("import")}>导入 Atlas JSON</button>{:else}<label class="file-button secondary"
                 >导入旧 Atlas JSON<input
                   type="file"
                   accept=".json"
                   on:change={(e) => file(e, "import")}
                 /></label
-              >
+              >{/if}
             </div>
+            <div class="github-backup-entry"><button class="secondary" on:click={() => isTauri ? invoke('cloud_open', {path:'/guide'}).catch(e => error = readable(e)) : window.open('https://atlas.sayori.org/guide#github-backup', '_blank', 'noopener')}>GitHub 备份教程</button></div>
             {#if pendingImport}<div class="import-preview">
                 <p>{pendingImport.summary}</p>
-                <p class="muted">确认后合并到已有记忆。</p>
                 <div class="button-row">
                   <button
                     class="secondary"
@@ -1544,11 +1688,6 @@
               </div>{/if}
           </section>
         {/if}
-        <footer class="page-footer">
-          <span>Tell Atlas. It remembers.</span><span
-            >你确认的，才是记忆。 ✦</span
-          >
-        </footer>
       </div>
     </main>
   </div>
@@ -1561,7 +1700,6 @@
     >
       <div class="quick-dialog-heading">
         <div>
-          <p class="eyebrow">TELL ATLAS. IT REMEMBERS.</p>
           <h2 id="quick-capture-title">随手记下一件事</h2>
         </div>
         <button
@@ -1590,9 +1728,7 @@
         {microphone}
         cancelRecording={stopVoice}
       />
-      <p class="quick-dialog-note">
-        无需选择类型。关闭窗口后，未提交的文字仍在本次草稿里。
-      </p>
     </dialog>
   {/if}
 {/if}
+{#if mode === "ready" && editorOpen}<ManualEditor {snapshot} entity={editedEntity} saved={recordSaved} close={() => editorOpen = false} />{/if}

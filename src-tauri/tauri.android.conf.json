@@ -1,0 +1,4 @@
+{
+  "app": { "windows": [{ "title": "络笺", "width": 400, "height": 800, "minWidth": 300, "minHeight": 400 }] },
+  "bundle": { "externalBin": [], "resources": [], "targets": "all" }
+}

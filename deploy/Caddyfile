@@ -1,0 +1,5 @@
+{$RELAKEEP_ORIGIN} {
+  @internal path /api/internal/*
+  respond @internal 404
+  reverse_proxy relakeep:5011
+}

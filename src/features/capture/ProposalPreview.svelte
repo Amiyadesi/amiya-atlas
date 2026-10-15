@@ -15,6 +15,8 @@
   import { proposalDiff } from "../../domain/changes";
   import type { ProposalChange } from "../../domain/changes";
   import ProposalDiff from "./ProposalDiff.svelte";
+  import FinancePreview from '../ledger/FinancePreview.svelte';
+  import {numberIssues} from '../../domain/finance-capture';
   export let record: ProposalRecord;
   export let capture: TextCapture;
   export let entities: Entity[];
@@ -40,7 +42,7 @@
     ...draft.entitiesToCreate.map((e) => ({ id: e.ref, name: e.name })),
   ];
   $: changes = [...draft.entitiesToCreate, ...draft.entitiesToUpdate];
-  $: changeCount = proposalDiff(draft, snapshot).length;
+  $: changeCount = proposalDiff(draft, snapshot).length + (draft.financeActions?.length??0);
   $: hasChanges = changeCount > 0;
   $: destructive = !!(
     draft.entitiesToDelete?.length ||
@@ -187,19 +189,19 @@
 </script>
 
 <section class="proposal-panel" aria-label="记忆提案">
+  {#if draft.financeActions?.length}
+    <FinancePreview bind:actions={draft.financeActions} {snapshot} changed={()=>{draft.numbersReviewed=false;}} />
+    {#if numberIssues(draft.financeActions,capture.rawText).length && !draft.numbersReviewed}<p class="error">{numberIssues(draft.financeActions,capture.rawText).join('；')}</p>{/if}
+    <label class="check"><input type="checkbox" bind:checked={draft.numbersReviewed} on:change={()=>{if(draft.numbersReviewed)draft.uncertainty=[];}} />我已核对金额、账户和日期</label>
+  {/if}
   <div class="section-heading">
     <div>
-      <p class="eyebrow">REVIEW & REMEMBER</p>
-      <h2>我理解的是……</h2>
+      <h2>变更预览</h2>
     </div>
-    <span class="pill amber">等待你的确认</span>
   </div>
-  <p class="muted">
-    核对变更，可取消单项或展开修改。确认前，已有记忆保持原样。
-  </p>
   <blockquote class="original">{capture.rawText}</blockquote>
   {#if draft.uncertainty.length}<div class="uncertainties">
-      <strong>还有不确定的地方</strong>{#each draft.uncertainty as item}<p>
+      <strong>待补充</strong>{#each draft.uncertainty as item}<p>
           {item}
         </p>{/each}
     </div>{/if}
@@ -454,9 +456,7 @@
     </div>{/if}
   <div class="proposal-footer">
     <span class="muted"
-      >{changeCount} 项变更{destructive
-        ? " · 包含删除，请逐项核对"
-        : " · 确认后才写入"}</span
+      >{changeCount} 项变更</span
     >
     <div class="button-row">
       <button

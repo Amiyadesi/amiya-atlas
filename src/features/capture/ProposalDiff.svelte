@@ -65,7 +65,6 @@
 
 <div class="proposal-diff" aria-label="记忆变更预览" aria-live="polite">
   <div class="diff-summary">
-    <strong>这次会改变什么</strong>
     <div>
       <span class="diff-add"
         >＋ {changes.filter((c) => c.kind === "add").length} 新增</span
@@ -100,7 +99,7 @@
           >{/if}
       </div>
       {#if change.automatic}<p class="diff-context">
-          随这项记忆一起移除；取消记忆删除即可保留。
+          随记忆删除
         </p>{/if}
       <dl class="diff-rows">
         {#each change.rows as row}
@@ -123,9 +122,6 @@
       </dl>
     </article>
   {:else}<p class="muted">
-      没有要应用的变更。已取消的项目和没有变化的字段不会写入。
+      没有变更
     </p>{/each}
-  {#if content.entitiesToDelete?.length}<p class="diff-removal-note">
-      删除会移除当前记忆及上面列出的关联、生命周期。原始输入仍保留；应用后可撤销最近一次确认。
-    </p>{/if}
 </div>

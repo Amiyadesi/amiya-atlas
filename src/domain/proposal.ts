@@ -1,4 +1,7 @@
 import { z } from "zod";
+import { moneySchema } from './money';
+import { financeActionSchema } from './ledger';
+import { applyFinanceActions, numberIssues } from './finance-capture';
 import type { Entity, VaultSnapshot } from "../lib/types";
 import { RELATION_TYPES, newId, nowIso } from "../lib/types";
 import {
@@ -23,9 +26,12 @@ export const ENTITY_TYPES = [
   "Service",
   "Project",
   "Repository",
+  "Client",
+  "Order",
 ] as const;
 export function attributeLabel(key: string): string {
   const labels: Record<string, string> = {
+    fee: '费用', billing_period: '计费周期', avoidable_project: '停用此项目可取消', quote: '报价', delivery: '交付日期', project: '项目', contact: '联系方式',
     region: "地区",
     country: "国家 / 地区",
     provider: "服务商",
@@ -61,6 +67,7 @@ const attributes = z.record(
     z.string().max(5000),
     z.number().finite(),
     z.boolean(),
+    moneySchema,
     z.array(z.string().max(500)).max(20),
   ]),
 );
@@ -79,6 +86,8 @@ const removal = z.strictObject({
   evidence: shape.evidence,
 });
 export const proposalSchema = z.strictObject({
+  financeActions: z.array(financeActionSchema).max(30).optional(),
+  numbersReviewed: z.boolean().optional(),
   entitiesToCreate: z.array(z.strictObject({ ref: text, ...shape })).max(20),
   entitiesToUpdate: z
     .array(
@@ -251,6 +260,7 @@ export function validateProposal(
       proposal.entitiesToDelete?.length ||
       proposal.relationsToDelete?.length ||
       proposal.eventsToDelete?.length
+      || proposal.financeActions?.length || proposal.uncertainty.length
     )
   )
     throw new Error("没有识别出可保存的记忆，请补充名称或信息");
@@ -569,6 +579,11 @@ export function applyBrowserProposal(
         note: item.note,
       });
     changed.add(entityId);
+  }
+  if (content.financeActions?.length) {
+    if (content.uncertainty.length) throw new Error('请先处理金额或账户待确认项');
+    if (!content.numbersReviewed && (input.inputType !== 'text' || numberIssues(content.financeActions,input.rawText).length)) throw new Error('请手动核对金额');
+    Object.assign(next,applyFinanceActions(next,content.financeActions,input));
   }
   next.captures = next.captures?.map((c) =>
     c.id === input.id ? { ...c, status: "CONFIRMED" } : c,

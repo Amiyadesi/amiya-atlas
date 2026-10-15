@@ -7,6 +7,37 @@ mod tests {
     use super::*;
     use std::fs;
 
+    #[cfg(windows)]
+    #[test]
+    fn remembered_device_unlock_reopens_and_can_be_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("atlas.sqlite");
+        let mut vault = VaultService::new(path.clone());
+        vault.initialize("correct horse battery staple").unwrap();
+        let mut snapshot = vault.load().unwrap();
+        snapshot.entities.push(entity("e1", "Private remembered asset", "PRIVATE"));
+        vault.save(snapshot, &[]).unwrap();
+        vault.set_device_unlock(true).unwrap();
+        let protected = fs::read(path.with_extension("device-unlock.dpapi")).unwrap();
+        assert!(!protected.windows(28).any(|w| w == b"correct horse battery staple"));
+        vault.lock();
+        let mut reopened = VaultService::new(path.clone());
+        assert!(reopened.device_unlock_enabled());
+        assert_eq!(reopened.unlock_device().unwrap().entities[0].name, "Private remembered asset");
+        reopened.set_device_unlock(false).unwrap();
+        reopened.lock();
+        assert!(!reopened.device_unlock_enabled());
+        assert!(reopened.unlock_device().is_err());
+        reopened.unlock("correct horse battery staple").unwrap();
+        reopened.set_device_unlock(true).unwrap();
+        let mut damaged = fs::read(path.with_extension("device-unlock.dpapi")).unwrap();
+        let last = damaged.len() - 1; damaged[last] ^= 1;
+        fs::write(path.with_extension("device-unlock.dpapi"), damaged).unwrap();
+        assert!(reopened.unlock_device().is_err());
+        assert!(!reopened.unlocked());
+        reopened.unlock("correct horse battery staple").unwrap();
+    }
+
     fn entity(id: &str, name: &str, privacy: &str) -> domain::Entity {
         domain::Entity {
             id: id.into(),
@@ -222,5 +253,28 @@ mod tests {
         assert!(snapshot.proposals.is_empty());
         assert!(snapshot.ai_config.is_none());
         snapshot.validate().unwrap();
+    }
+
+    #[test]
+    fn cloud_session_is_encrypted_hidden_and_survives_normal_edits_and_backup() {
+        let dir=tempfile::tempdir().unwrap();
+        let mut vault=VaultService::new(dir.path().join("atlas.sqlite"));
+        vault.initialize("test-master-password-123").unwrap();
+        vault.set_cloud_session(Some(crate::cloud::CloudSession{token:"private-cloud-token-for-test-123".into(),email:"test@example.invalid".into(),expires_at:123456789})).unwrap();
+        let loaded=vault.load().unwrap();
+        let json=serde_json::to_string(&loaded).unwrap();
+        assert!(!json.contains("private-cloud-token")&&!json.contains("cloudSession"));
+        let edit:Snapshot=serde_json::from_str(&json).unwrap();
+        let saved=vault.save(edit,&[]).unwrap();
+        assert_eq!(saved.cloud_session.as_ref().unwrap().token,"private-cloud-token-for-test-123");
+        assert!(!serde_json::to_string(&saved.redacted(true)).unwrap().contains("private-cloud-token"));
+        let backup=vault.backup().unwrap();assert!(!backup.contains("private-cloud-token"));
+        vault.lock();vault.unlock("test-master-password-123").unwrap();
+        assert!(vault.load().unwrap().cloud_session.is_some());
+        let mut restored=VaultService::new(dir.path().join("restored.sqlite"));restored.restore(&backup,"test-master-password-123").unwrap();
+        assert!(restored.load().unwrap().cloud_session.is_some());
+        let needle = b"private-cloud-token-for-test-123";
+        assert!(!fs::read(&vault.path).unwrap().windows(needle.len()).any(|part|part==needle));
+        vault.set_cloud_session(None).unwrap();assert!(vault.load().unwrap().cloud_session.is_none());
     }
 }

@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+Disallow: /account
+Disallow: /login
+Disallow: /device
+Disallow: /api/
+Sitemap: https://atlas.sayori.org/sitemap.xml

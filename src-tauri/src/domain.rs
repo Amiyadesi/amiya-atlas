@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use uuid::Uuid;
 
 pub type Result<T> = std::result::Result<T, String>;
-pub const RELATIONS: &[&str] = &["REGISTERED_WITH", "AUTHENTICATES_WITH", "RECOVERS_WITH", "OWNS_ADDRESS", "MANAGES", "USES", "DEPENDS_ON", "HOSTS", "HOSTED_ON", "CONNECTED_VIA", "EXPOSED_AT", "SOURCE_IN", "DEPLOYED_ON", "PAID_BY", "BILLED_FOR", "ISSUED_BY", "STORED_IN", "RELATED_TO", "OWNS", "MANAGED_BY"];
+pub const RELATIONS: &[&str] = &["REGISTERED_WITH", "AUTHENTICATES_WITH", "RECOVERS_WITH", "OWNS_ADDRESS", "MANAGES", "USES", "DEPENDS_ON", "HOSTS", "HOSTED_ON", "CONNECTED_VIA", "EXPOSED_AT", "SOURCE_IN", "DEPLOYED_ON", "PAID_BY", "BILLED_FOR", "ISSUED_BY", "STORED_IN", "RELATED_TO", "OWNS", "MANAGED_BY", "INVOICED_TO", "ALLOCATED_TO"];
 
 fn private() -> String { "PRIVATE".into() }
 fn active() -> String { "ACTIVE".into() }
@@ -92,6 +92,16 @@ pub struct Event {
 #[derive(Clone, Default, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Snapshot {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ledger_accounts: Vec<crate::ledger::Account>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub transactions: Vec<crate::ledger::Transaction>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allocation_rules: Vec<crate::ledger::Allocation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub finance_records: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub opaque_records: Vec<Value>,
     #[serde(default)]
     pub revision: u64,
     pub entities: Vec<Entity>,
@@ -103,6 +113,8 @@ pub struct Snapshot {
     pub proposals: Vec<crate::capture::ProposalRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ai_config: Option<crate::ai::AiConfig>,
+    #[serde(skip)]
+    pub cloud_session: Option<crate::cloud::CloudSession>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -144,6 +156,7 @@ impl Snapshot {
                 let key: String = f.key.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect();
                 if ["password", "passwd", "pwd", "cvv", "cvc", "pin", "apikey", "apitoken", "accesstoken", "refreshtoken", "privatekey", "otpseed", "totpsecret", "pan", "cardnumber", "密码", "口令", "私钥"].contains(&key.as_str()) { return Err("凭据请保存在 Vaultwarden；Atlas 仅接受引用".into()); }
                 let valid = match f.value_type.as_str() {
+                    "money" => crate::ledger::money_value(&f.value).is_ok(),
                     "text" => f.value.is_string(), "number" => f.value.is_number(), "boolean" => f.value.is_boolean(),
                     "date" => f.value.as_str().is_some_and(|s| s.is_empty() || date(s).is_ok()),
                     "url" => f.value.as_str().is_some_and(|s| s.is_empty() || valid_url(s).is_ok()), "json" => true, _ => false,
@@ -181,7 +194,9 @@ impl Snapshot {
             if let Some(note) = &ev.note { check_text(note, 5000, true)?; }
         }
         crate::capture::validate_records(self)?;
+        crate::ledger::validate(self)?;
         if let Some(config) = &self.ai_config { config.validate()?; }
+        if let Some(session) = &self.cloud_session { session.validate()?; }
         Ok(())
     }
 
@@ -212,18 +227,20 @@ impl Snapshot {
                 if serde_json::to_value(existing).unwrap() != serde_json::to_value(ev).unwrap() { return Err("导入事件 ID 冲突".into()); }
             } else { out.events.push(ev.clone()); }
         }
+        out = crate::ledger::merge_finance(&out, imported)?;
         out.validate()?;
         Ok(out)
     }
 
     pub fn redacted(&self, mask_private: bool) -> Self {
         let mut out = self.clone();
-        out.captures.clear(); out.proposals.clear(); out.ai_config = None;
+        out.ledger_accounts.clear();out.transactions.clear();out.allocation_rules.clear();out.finance_records.clear();out.opaque_records.clear();
+        out.captures.clear(); out.proposals.clear(); out.ai_config = None; out.cloud_session = None;
         let secret_ids: HashSet<_> = out.entities.iter().filter(|e| e.privacy == "SECRET").map(|e| e.id.clone()).collect();
         out.entities.retain(|e| !secret_ids.contains(&e.id));
         for (i, e) in out.entities.iter_mut().enumerate() {
             if mask_private && e.privacy != "PUBLIC" { e.name = format!("Asset {}", i + 1); e.tags.clear(); }
-            e.fields.retain(|f| f.privacy != "SECRET");
+            e.fields.retain(|f| f.privacy != "SECRET" && f.value_type != "money" && !["notes","cost","monthly_cost","currency","avoidable_project","project"].contains(&f.key.as_str()));
             for f in &mut e.fields {
                 f.source_of_truth = None;
                 if mask_private && f.privacy == "PRIVATE" { f.value = match f.value_type.as_str() { "number" => Value::from(0), "boolean" => Value::Bool(false), "json" => Value::Null, _ => Value::String(String::new()) }; f.searchable = false; }

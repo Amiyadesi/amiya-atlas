@@ -1,0 +1,12 @@
+[Unit]
+Description=Forward Relakeep CPA requests to existing SSH tunnel
+Requires=relakeep-cpa.socket
+After=relakeep-cpa.socket
+
+[Service]
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd 127.0.0.1:28081
+Restart=on-failure
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true

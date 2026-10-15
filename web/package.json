@@ -1,0 +1,26 @@
+{
+  "name": "@relakeep/web",
+  "private": true,
+  "type": "module",
+  "version": "0.4.1",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 4321",
+    "build": "vite build && node pages-build.mjs",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "deploy": "wrangler pages deploy build --project-name relakeep --branch main"
+  },
+  "dependencies": {
+    "@sveltejs/kit": "2.70.3",
+    "svelte": "^5.57.1",
+    "better-auth": "1.7.7"
+  },
+  "devDependencies": {
+    "@sveltejs/adapter-static": "3.0.10",
+    "@sveltejs/vite-plugin-svelte": "^6.0.0",
+    "@opentelemetry/api": "^1.9.0",
+    "svelte-check": "^4.3.1",
+    "typescript": "^5.9.2",
+    "vite": "^7.0.0",
+    "wrangler": "4.149.0"
+  }
+}

@@ -1,0 +1,20 @@
+services:
+  relakeep:
+    build: .
+    image: relakeep:selfhost-0.4.1
+    restart: unless-stopped
+    env_file: selfhost.env
+    ports:
+      - "127.0.0.1:5011:5011"
+    volumes:
+      - relakeep-data:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    mem_limit: 1g
+    logging:
+      options:
+        max-size: "5m"
+        max-file: "2"
+volumes:
+  relakeep-data:

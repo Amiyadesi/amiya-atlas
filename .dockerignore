@@ -1,0 +1,16 @@
+.git
+**/node_modules
+**/target
+dist
+web/build
+server/dist
+_private
+.codex
+output
+**/.env
+**/.env.*
+**/*.sqlite*
+**/*.db
+**/*.age
+**/*.key
+**/*.pem

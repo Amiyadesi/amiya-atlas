@@ -1,4 +1,4 @@
-use crate::{ai, bridge, capture, domain, quick_capture, vault, voice};
+use crate::{ai, capture, cloud, domain, quick_capture, vault, voice, sync};
 use domain::{AtlasFile, CaptureRequest, GraphService, Result, Snapshot};
 use serde::Serialize;
 use std::{
@@ -18,6 +18,8 @@ pub struct AppState {
     pub voice_io: Arc<Mutex<()>>,
     pub voice_cancel: Arc<AtomicU64>,
     pub quick_capture: Arc<Mutex<quick_capture::QuickCaptureStatus>>,
+    pub cloud_device: Arc<Mutex<Option<cloud::DeviceFlow>>>,
+    pub pending_cloud: Arc<Mutex<Option<cloud::CloudSession>>>,
 }
 impl Default for AppState {
     fn default() -> Self {
@@ -27,6 +29,8 @@ impl Default for AppState {
             voice_io: Arc::new(Mutex::new(())),
             voice_cancel: Arc::new(AtomicU64::new(0)),
             quick_capture: Arc::new(Mutex::new(quick_capture::QuickCaptureStatus::default())),
+            cloud_device: Arc::new(Mutex::new(None)),
+            pending_cloud: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -38,6 +42,8 @@ struct Status {
     unlocked: bool,
     entity_count: usize,
     bridge_error: Option<String>,
+    device_unlock_enabled: bool,
+    idle_minutes: u32,
 }
 
 #[derive(Serialize)]
@@ -68,35 +74,57 @@ fn vault_status(state: State<'_, AppState>) -> Result<Status> {
         unlocked: vault.unlocked(),
         entity_count: count,
         bridge_error: None,
+        device_unlock_enabled: vault.device_unlock_enabled(),
+        idle_minutes: vault.idle_minutes(),
     })
 }
 
 #[tauri::command]
 fn initialize_vault(password: String, state: State<'_, AppState>) -> Result<()> {
-    state
-        .vault
-        .lock()
-        .map_err(|_| "Vault 状态不可用".to_string())?
-        .initialize(&password)
+    let mut vault = state.vault.lock().map_err(|_| "Vault 状态不可用")?;
+    vault.initialize(&password)?;
+    attach_cloud_sign_in(&mut vault, &state.pending_cloud)
 }
 #[tauri::command]
 fn unlock_vault(password: String, state: State<'_, AppState>) -> Result<()> {
-    state
-        .vault
-        .lock()
-        .map_err(|_| "Vault 状态不可用".to_string())?
-        .unlock(&password)
-        .map(|_| ())
+    let mut vault = state.vault.lock().map_err(|_| "Vault 状态不可用")?;
+    vault.unlock(&password)?;
+    attach_cloud_sign_in(&mut vault, &state.pending_cloud)
+}
+fn attach_cloud_sign_in(vault: &mut VaultService, pending: &Mutex<Option<cloud::CloudSession>>) -> Result<()> {
+    let mut pending = pending.lock().map_err(|_| "登录状态不可用")?;
+    if let Some(session) = pending.as_ref() {
+        if session.expires_at <= chrono::Utc::now().timestamp_millis() { *pending = None; return Err("官网登录已过期，请重新登录".into()); }
+        vault.set_cloud_session(Some(session.clone()))?;
+        *pending = None;
+    }
+    Ok(())
 }
 #[tauri::command]
 fn lock_vault(state: State<'_, AppState>) -> Result<()> {
     state.voice_cancel.fetch_add(1, Ordering::SeqCst);
+    *state.cloud_device.lock().map_err(|_| "设备登录状态不可用")? = None;
+    *state.pending_cloud.lock().map_err(|_| "登录状态不可用")? = None;
     state
         .vault
         .lock()
         .map_err(|_| "Vault 状态不可用".to_string())?
         .lock();
     Ok(())
+}
+#[tauri::command]
+fn set_device_unlock(enabled: bool, state: State<'_, AppState>) -> Result<()> {
+    state.vault.lock().map_err(|_| "Vault 状态不可用")?.set_device_unlock(enabled)
+}
+#[tauri::command]
+fn set_idle_minutes(minutes: u32, state: State<'_, AppState>) -> Result<()> {
+    state.vault.lock().map_err(|_| "Vault 状态不可用")?.set_idle_minutes(minutes)
+}
+#[tauri::command]
+fn unlock_device(state: State<'_, AppState>) -> Result<()> {
+    let mut vault = state.vault.lock().map_err(|_| "Vault 状态不可用")?;
+    vault.unlock_device()?;
+    attach_cloud_sign_in(&mut vault, &state.pending_cloud)
 }
 #[tauri::command]
 fn load_snapshot(state: State<'_, AppState>) -> Result<Snapshot> {
@@ -590,6 +618,8 @@ fn cancel_voice_transcription(state: State<'_, AppState>) {
 }
 #[tauri::command]
 fn read_capture_clipboard(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<String> {
+    #[cfg(target_os="android")] { let _=(app,state); return Err("请在输入框长按粘贴".into()); }
+    #[cfg(not(target_os="android"))] {
     use tauri_plugin_clipboard_manager::ClipboardExt;
     state
         .vault
@@ -605,6 +635,7 @@ fn read_capture_clipboard(app: tauri::AppHandle, state: State<'_, AppState>) -> 
     }
     domain::reject_credential(&text)?;
     Ok(text.trim().into())
+    }
 }
 #[tauri::command]
 fn quick_capture_status(state: State<'_, AppState>) -> Result<quick_capture::QuickCaptureStatus> {
@@ -622,30 +653,182 @@ fn set_quick_capture_enabled(
     quick_capture::save(&app, enabled)
 }
 
+#[tauri::command]
+async fn sync_status(state: State<'_,AppState>)->Result<sync::Status>{
+    let vault=state.vault.clone();tauri::async_runtime::spawn_blocking(move|| {let guard=vault.lock().map_err(|_|"Vault 状态不可用")?;sync::status(&guard)}).await.map_err(|_|"同步状态中断")?
+}
+#[tauri::command]
+async fn sync_configure(config:sync::Config,state:State<'_,AppState>)->Result<sync::Status>{
+    let vault=state.vault.clone();tauri::async_runtime::spawn_blocking(move|| {let mut guard=vault.lock().map_err(|_|"Vault 状态不可用")?;sync::configure(&mut guard,config)}).await.map_err(|_|"同步设置中断")?
+}
+#[tauri::command]
+async fn sync_run(strategy:Option<String>,state:State<'_,AppState>)->Result<sync::Status>{
+    let vault=state.vault.clone();tauri::async_runtime::spawn_blocking(move|| {let mut guard=vault.lock().map_err(|_|"Vault 状态不可用")?;sync::run(&mut guard,strategy.as_deref())}).await.map_err(|_|"同步中断")?
+}
+#[tauri::command]
+async fn sync_adopt(password:String,state:State<'_,AppState>)->Result<sync::Status>{
+    let vault=state.vault.clone();tauri::async_runtime::spawn_blocking(move|| {let mut guard=vault.lock().map_err(|_|"Vault 状态不可用")?;sync::adopt(&mut guard,&password)}).await.map_err(|_|"同步导入中断")?
+}
+#[tauri::command]
+async fn sync_server_start(url:String,app:tauri::AppHandle)->Result<serde_json::Value>{
+    tauri::async_runtime::spawn_blocking(move|| {let value=sync::server_start(&url)?;use tauri_plugin_opener::OpenerExt;app.opener().open_url(value["verificationUrl"].as_str().ok_or("授权地址缺失")?,None::<&str>).map_err(|_|"无法打开系统浏览器")?;Ok(value)}).await.map_err(|_|"服务器授权中断")?
+}
+#[tauri::command]
+async fn sync_server_poll(url:String,device_code:String,automatic:bool,state:State<'_,AppState>)->Result<serde_json::Value>{
+    let vault=state.vault.clone();tauri::async_runtime::spawn_blocking(move|| {let mut guard=vault.lock().map_err(|_|"Vault 状态不可用")?;sync::server_poll(&mut guard,&url,&device_code,automatic)}).await.map_err(|_|"服务器授权中断")?
+}
+#[tauri::command]
+fn sync_disconnect(state:State<'_,AppState>)->Result<()>{state.vault.lock().map_err(|_|"Vault 状态不可用")?.clear_sync()}
+
+#[tauri::command]
+fn web_open(app:tauri::AppHandle)->Result<()> {
+    #[cfg(all(feature="web-host",not(target_os="android")))] {
+        let guard=app.state::<WebState>();let handle=guard.0.lock().map_err(|_|"网页状态不可用")?;let handle=handle.as_ref().ok_or("网页端口不可用，请检查 5011 是否已占用")?;
+        return open::that(format!("http://localhost:{}/#access={}",handle.port,handle.token)).map_err(|_|"无法打开浏览器".into());
+    }
+    #[cfg(any(not(feature="web-host"),target_os="android"))] {let _=app;Err("手机端不提供本机网页服务".into())}
+}
+#[cfg(all(feature="web-host",not(target_os="android")))]
+#[derive(Default)]
+struct WebState(Mutex<Option<crate::http::WebHandle>>);
+
+#[tauri::command]
+async fn save_export_file(filename:String,payload:String,app:tauri::AppHandle)->Result<bool>{
+    use tauri_plugin_dialog::DialogExt;
+    use tauri_plugin_fs::{FsExt,OpenOptions};
+    if payload.len()>128*1024*1024||!filename.ends_with(".json")||filename.contains(['/', '\\']){return Err("导出文件无效".into());}
+    tauri::async_runtime::spawn_blocking(move||{
+        let Some(path)=app.dialog().file().set_file_name(filename).add_filter("JSON",&["json"]).blocking_save_file() else{return Ok(false);};
+        let mut file=app.fs().open(path,OpenOptions::new().write(true).create(true).truncate(true).clone()).map_err(|_|"无法写入所选文件")?;
+        use std::io::Write;file.write_all(payload.as_bytes()).map_err(|_|"导出写入失败")?;file.sync_all().map_err(|_|"导出保存失败")?;Ok(true)
+    }).await.map_err(|_|"导出中断")?
+}
+#[tauri::command]
+async fn read_import_file(app:tauri::AppHandle)->Result<Option<String>>{
+    use tauri_plugin_dialog::DialogExt;
+    use tauri_plugin_fs::{FsExt,OpenOptions};
+    use std::io::Read;
+    tauri::async_runtime::spawn_blocking(move||{
+        let Some(path)=app.dialog().file().add_filter("JSON",&["json"]).blocking_pick_file() else{return Ok(None);};
+        let file=app.fs().open(path,OpenOptions::new().read(true).clone()).map_err(|_|"无法读取所选文件")?;
+        let mut text=String::new();file.take(128*1024*1024+1).read_to_string(&mut text).map_err(|_|"文件不是 UTF-8 JSON")?;
+        if text.len()>128*1024*1024{return Err("文件超过容量限制".into());}Ok(Some(text))
+    }).await.map_err(|_|"文件读取中断")?
+}
+
+#[tauri::command]
+fn cloud_status(state: State<'_, AppState>) -> Result<serde_json::Value> {
+    let vault=state.vault.lock().map_err(|_|"Vault 状态不可用")?;
+    let session=vault.load()?.cloud_session;
+    Ok(match session {Some(value)=>serde_json::json!({"connected":value.expires_at>chrono::Utc::now().timestamp_millis(),"email":value.email,"expiresAt":value.expires_at}),None=>serde_json::json!({"connected":false})})
+}
+#[tauri::command]
+async fn cloud_device_start(app:tauri::AppHandle,state: State<'_, AppState>) -> Result<serde_json::Value> {
+    let device=state.cloud_device.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let value=cloud::request("/api/auth/device/code",Some(&serde_json::json!({"client_id":"relakeep-desktop"})),None)?;
+        let code=value["device_code"].as_str().ok_or("设备码缺失")?.to_string();
+        let user_code=value["user_code"].as_str().ok_or("设备显示码缺失")?;
+        if code.len()>500||user_code.len()>16||!user_code.chars().all(|c|c.is_ascii_alphanumeric()||c=='-') {return Err("设备响应无效".into());}
+        let expires=value["expires_in"].as_i64().filter(|v|*v>0&&*v<=900).ok_or("设备有效期无效")?;
+        *device.lock().map_err(|_|"设备登录状态不可用")?=Some(cloud::DeviceFlow{code,expires_at:chrono::Utc::now().timestamp_millis()+expires*1000});
+        use tauri_plugin_opener::OpenerExt;
+        app.opener().open_url(format!("{}/device?user_code={user_code}",cloud::ORIGIN),None::<&str>).map_err(|_|"无法打开系统浏览器")?;
+        Ok(serde_json::json!({"userCode":user_code,"expiresIn":expires,"interval":5}))
+    }).await.map_err(|_|"设备登录中断")?
+}
+#[tauri::command]
+async fn cloud_device_poll(state: State<'_, AppState>) -> Result<serde_json::Value> {
+    let code={let guard=state.cloud_device.lock().map_err(|_|"设备登录状态不可用")?;let flow=guard.as_ref().ok_or("请先发起桌面登录")?;
+        if flow.expires_at<=chrono::Utc::now().timestamp_millis(){return Err("设备码已过期，请重新连接".into());}flow.code.clone()};
+    let vault=state.vault.clone();let device=state.cloud_device.clone();let pending=state.pending_cloud.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let code=zeroize::Zeroizing::new(code);
+        let response=cloud::request("/api/auth/device/token",Some(&serde_json::json!({"client_id":"relakeep-desktop","device_code":code.as_str(),"grant_type":"urn:ietf:params:oauth:grant-type:device_code"})),None)?;
+        if response["pending"]==true {return Ok(response);}
+        let token=response["access_token"].as_str().ok_or("云会话缺失")?.to_string();
+        let seconds=response["expires_in"].as_i64().filter(|v|*v>0&&*v<=60*60*24*31).ok_or("云会话有效期无效")?;
+        let info=cloud::request("/api/auth/get-session",None,Some(&token))?;
+        let email=info["user"]["email"].as_str().ok_or("云账户缺失")?.to_string();
+        let mut guard=device.lock().map_err(|_|"设备登录状态不可用")?;
+        if guard.as_ref().map(|f|f.code.as_str())!=Some(code.as_str()) {return Err("设备登录已取消".into());}
+        let session=cloud::CloudSession{token,email,expires_at:chrono::Utc::now().timestamp_millis()+seconds*1000};
+        let mut vault=vault.lock().map_err(|_|"Vault 状态不可用")?;
+        if !vault.unlocked() && vault.device_unlock_enabled() { vault.unlock_device()?; }
+        if vault.unlocked() { vault.set_cloud_session(Some(session))?; }
+        else { *pending.lock().map_err(|_|"登录状态不可用")?=Some(session); }
+        *guard=None;Ok(serde_json::json!({"connected":true}))
+    }).await.map_err(|_|"设备登录中断")?
+}
+#[tauri::command]
+async fn cloud_logout(state: State<'_, AppState>) -> Result<()> {
+    *state.cloud_device.lock().map_err(|_|"设备登录状态不可用")?=None;
+    let token={let mut vault=state.vault.lock().map_err(|_|"Vault 状态不可用")?;let session=vault.load()?.cloud_session;vault.set_cloud_session(None)?;session};
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Some(session)=token {cloud::request("/api/auth/sign-out",Some(&serde_json::json!({})),Some(&session.token))?;}Ok(())
+    }).await.map_err(|_|"云退出中断")?
+}
+#[tauri::command]
+async fn cloud_request(path:String,body:Option<serde_json::Value>,state:State<'_,AppState>)->Result<serde_json::Value> {
+    if !["/api/account/balance","/api/account/ai","/api/account/checkout","/api/account/portal","/api/features"].contains(&path.as_str()) {return Err("云接口无效".into());}
+    let session={let mut vault=state.vault.lock().map_err(|_|"Vault 状态不可用")?;vault.touch()?;vault.load()?.cloud_session};
+    if path!="/api/features" && !session.as_ref().is_some_and(|s|s.expires_at>chrono::Utc::now().timestamp_millis()){return Err("请先在设置中登录官网云账户".into());}
+    let vault=state.vault.clone();
+    tauri::async_runtime::spawn_blocking(move||{
+        let value=cloud::request(&path,body.as_ref(),session.as_ref().map(|s|s.token.as_str()))?;
+        vault.lock().map_err(|_|"Vault 状态不可用")?.touch()?;
+        Ok(value)
+    }).await.map_err(|_|"云请求中断")?
+}
+#[tauri::command]
+fn cloud_open(path:String,app:tauri::AppHandle)->Result<()> {
+    if !["/login","/pricing","/account","/guide","/privacy","/refunds"].contains(&path.as_str()){return Err("官网页面无效".into());}
+    use tauri_plugin_opener::OpenerExt;app.opener().open_url(format!("{}{path}",cloud::ORIGIN),None::<&str>).map_err(|_|"无法打开浏览器".into())
+}
+#[tauri::command]
+fn cloud_open_payment(url:String)->Result<()> {cloud::open_payment(&url)}
+
+#[cfg_attr(target_os="android",tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder=tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_clipboard_manager::init())
-        .plugin(
+        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_opener::init());
+    #[cfg(not(target_os="android"))]
+    let builder=builder.plugin(tauri_plugin_clipboard_manager::init()).plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(quick_capture::handle)
                 .build(),
-        )
-        .manage(AppState::default())
+        );
+    #[cfg(all(feature="web-host",not(target_os="android")))]
+    let builder=builder.manage(WebState::default());
+    builder.manage(AppState::default())
         .setup(|app| {
             let state = app.state::<AppState>();
             let app_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
             std::fs::create_dir_all(&app_dir).map_err(|e| e.to_string())?;
             state.vault.lock().map_err(|_| "Vault 状态不可用")?.path = app_dir.join("atlas.sqlite");
-            bridge::start(state.vault.clone());
-            quick_capture::initialize(app.handle())?;
+            #[cfg(not(target_os="android"))] {
+                #[cfg(target_os="windows")]
+                crate::bridge::start(state.vault.clone());
+                quick_capture::initialize(app.handle())?;
+            }
+            #[cfg(all(feature="web-host",not(target_os="android")))] {
+                match crate::http::start(state.vault.clone(),"127.0.0.1:5011",crate::hex_token(),"http://localhost:5011".into()){
+                    Ok(handle)=>*app.state::<WebState>().0.lock().map_err(|_|"网页状态不可用")?=Some(handle),
+                    Err(error)=>eprintln!("Local web: {error}"),
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             vault_status,
+            set_idle_minutes,
             initialize_vault,
             unlock_vault,
             lock_vault,
+            set_device_unlock,
+            unlock_device,
             load_snapshot,
             save_snapshot,
             search_snapshot,
@@ -675,8 +858,16 @@ pub fn run() {
             cancel_voice_transcription,
             read_capture_clipboard,
             quick_capture_status,
-            set_quick_capture_enabled
+            set_quick_capture_enabled,
+            cloud_status,
+            cloud_device_start,
+            cloud_device_poll,
+            cloud_logout,
+            cloud_request,
+            cloud_open,
+            cloud_open_payment
+            ,sync_status,sync_configure,sync_run,sync_adopt,sync_disconnect,sync_server_start,sync_server_poll,web_open,save_export_file,read_import_file
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Amiya Atlas");
+        .expect("error while running Relakeep");
 }

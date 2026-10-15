@@ -1,0 +1,10 @@
+[Unit]
+Description=Relakeep container access to Home CPA tunnel
+
+[Socket]
+ListenStream=172.17.0.1:28082
+NoDelay=true
+FreeBind=true
+
+[Install]
+WantedBy=sockets.target

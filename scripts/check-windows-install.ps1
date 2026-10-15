@@ -1,7 +1,9 @@
 param([string]$InstallDir)
 $ErrorActionPreference = 'Stop'
 if (-not $InstallDir) {
-  $InstallDir = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Amiya Atlas').InstallLocation.Trim('"')
+  $taskUninstall='HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Relakeep'
+  if (-not (Test-Path -LiteralPath $taskUninstall)) { $taskUninstall='HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Amiya Atlas' }
+  $InstallDir = (Get-ItemProperty -LiteralPath $taskUninstall).InstallLocation.Trim('"')
 }
 $InstallDir = (Resolve-Path -LiteralPath $InstallDir).ProviderPath
 foreach ($file in @('amiya-atlas.exe', 'amiya_atlas_native_host.exe', 'extension\manifest.json', 'extension\id.txt', 'native-host\org.sayori.atlas.json')) {

@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630" fill="none">
+  <rect width="1200" height="630" fill="#F7F6FB"/>
+  <g fill="#6E56AF" fill-opacity="0.12">
+    <pattern id="dots" width="28" height="28" patternUnits="userSpaceOnUse">
+      <circle cx="4" cy="4" r="1.4"/>
+    </pattern>
+    <rect width="1200" height="630" fill="url(#dots)"/>
+  </g>
+  <!-- Soft ambient glow -->
+  <circle cx="920" cy="180" r="260" fill="#EDE6F8" opacity="0.7"/>
+  <circle cx="240" cy="520" r="220" fill="#E3F0E8" opacity="0.65"/>
+
+  <!-- Left brand & headline -->
+  <g transform="translate(84, 118)">
+    <rect width="72" height="72" rx="17" fill="#443752"/>
+    <path d="M24 22h10a10 10 0 0 1 0 20H24V22zm0 20v10m10-10 15 10" fill="none" stroke="#F8F5FE" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="49" cy="52" r="5" fill="#BDD9C5"/>
+    <text x="92" y="45" fill="#262338" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="32" font-weight="700">络笺 Relakeep</text>
+    <text x="92" y="68" fill="#686279" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="16" font-weight="500">atlas.sayori.org · 本地加密数字资产与关系记忆</text>
+
+    <text x="0" y="168" fill="#221E33" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="56" font-weight="800" letter-spacing="-1.5">记住资产，</text>
+    <text x="0" y="242" fill="#221E33" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="56" font-weight="800" letter-spacing="-1.5">也记住它们的关系。</text>
+    <text x="0" y="302" fill="#686279" font-family="Segoe UI, sans-serif" font-size="22" font-weight="500">Remember what you own. And how it connects.</text>
+
+    <rect x="0" y="346" width="330" height="44" rx="22" fill="#FFFFFF" stroke="#DFD9EC" stroke-width="1.5"/>
+    <circle cx="24" cy="368" r="6" fill="#5CA377"/>
+    <text x="42" y="374" fill="#483A5B" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="16" font-weight="600">留在本机 · 免费使用 · 无需注册</text>
+  </g>
+
+  <!-- Right relation board -->
+  <g transform="translate(650, 86)">
+    <rect width="470" height="458" rx="24" fill="#FFFFFF" fill-opacity="0.88" stroke="#DFD9EC" stroke-width="2"/>
+    <path d="M135 120 C135 210 270 150 270 230" stroke="#765BB5" stroke-width="3"/>
+    <path d="M125 340 C205 340 190 245 255 245" stroke="#765BB5" stroke-width="3"/>
+    <path d="M300 265 C300 325 360 325 360 375" stroke="#CBC2DE" stroke-width="2.5"/>
+
+    <!-- Slip 1: Email -->
+    <g transform="translate(42, 48) rotate(-4)">
+      <rect width="176" height="92" rx="8" fill="#E4ECF9" stroke="#B9CCE6" stroke-width="1.5"/>
+      <circle cx="88" cy="9" r="4" fill="#8F82A3"/>
+      <text x="18" y="30" fill="#796B85" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" font-weight="600">邮箱 · Email</text>
+      <text x="18" y="56" fill="#363246" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="17" font-weight="700">@ 主邮箱</text>
+      <text x="18" y="76" fill="#786B84" font-family="Consolas, monospace" font-size="12">hello@sayori.invalid</text>
+    </g>
+
+    <!-- Slip 2: Google Account (chosen) -->
+    <g transform="translate(178, 178)">
+      <rect width="194" height="98" rx="8" fill="#EEE7F8" stroke="#7C63B8" stroke-width="2.5"/>
+      <circle cx="97" cy="9" r="4" fill="#7C63B8"/>
+      <text x="18" y="30" fill="#6E56AF" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" font-weight="700">网站账号 · Account</text>
+      <text x="18" y="58" fill="#262338" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="18" font-weight="700">G Google 主账号</text>
+      <text x="18" y="80" fill="#786B84" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">注册邮箱 + 找回号码已关联</text>
+    </g>
+
+    <!-- Slip 3: SIM -->
+    <g transform="translate(38, 296) rotate(3)">
+      <rect width="172" height="90" rx="8" fill="#F7F0DC" stroke="#DCCB96" stroke-width="1.5"/>
+      <circle cx="86" cy="9" r="4" fill="#8F82A3"/>
+      <text x="18" y="30" fill="#796B85" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" font-weight="600">电话卡 · SIM</text>
+      <text x="18" y="55" fill="#363246" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="17" font-weight="700">S 备用号码</text>
+      <text x="18" y="75" fill="#786B84" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">尾号 0826 · 找回绑定</text>
+    </g>
+
+    <!-- Slip 4: Card -->
+    <g transform="translate(262, 330) rotate(-2)">
+      <rect width="176" height="90" rx="8" fill="#E2F0E8" stroke="#B4D2C0" stroke-width="1.5"/>
+      <circle cx="88" cy="9" r="4" fill="#8F82A3"/>
+      <text x="18" y="30" fill="#5A7A68" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" font-weight="600">付款卡 · Card</text>
+      <text x="18" y="55" fill="#363246" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="17" font-weight="700">C 日常付款卡</text>
+      <text x="18" y="75" fill="#5A7A68" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">尾号 1234 · 自动续费</text>
+    </g>
+  </g>
+</svg>

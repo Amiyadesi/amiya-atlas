@@ -1,0 +1,12 @@
+import { randomBytes } from "node:crypto";
+import { existsSync, writeFileSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+const file = resolve(process.argv[2] ?? "selfhost.env");
+const origin = process.argv[3] ?? "http://localhost:5011";
+const parsed = new URL(origin);
+if (!["http:", "https:"].includes(parsed.protocol) || parsed.pathname !== "/" || parsed.search || parsed.hash || parsed.username || parsed.password) throw new Error("请输入 http://localhost:5011 或完整 HTTPS 来源地址");
+if (parsed.protocol === "http:" && !["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname)) throw new Error("远程地址需要 HTTPS");
+if (existsSync(file)) throw new Error("配置已存在，保留原密钥；更换域名请直接编辑 RELAKEEP_ORIGIN");
+writeFileSync(file, `RELAKEEP_ORIGIN=${parsed.origin}\nBETTER_AUTH_SECRET=${randomBytes(48).toString("base64url")}\nRELAKEEP_SETUP_TOKEN=${randomBytes(32).toString("base64url")}\n`, { mode: 0o600 });
+console.log(`配置已保存：${file}\n首次登录的设置码：查看文件中的 RELAKEEP_SETUP_TOKEN`);
+if (!readFileSync(file,"utf8").includes("BETTER_AUTH_SECRET=")) throw new Error("配置写入失败");
