@@ -28,6 +28,8 @@ server/dist/
 !**/.env.example
 _private/
 .codex/
+.playwright-cli/
+deploy/hk/
 output/
 selfhost.env
 web/static/downloads/*.apk

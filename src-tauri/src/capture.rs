@@ -14,6 +14,7 @@ pub const TYPES: &[&str] = &[
     "Domain",
     "Server",
     "Service",
+    "Provider",
     "Project",
     "Repository",
     "Client", "Order",
@@ -167,6 +168,7 @@ fn type_template(kind: &str) -> &str {
         "Project" => "project",
         "Repository" => "repository",
         "Service" => "service",
+        "Provider" => "provider",
         _ => "generic",
     }
 }
@@ -1056,6 +1058,26 @@ mod tests {
     }
     fn proposal() -> Proposal {
         serde_json::from_value(serde_json::json!({"entitiesToCreate":[{"ref":"grok","name":"SuperGrok","type":"Subscription","status":"ACTIVE","attributes":{},"notes":"","evidence":"SuperGrok"}],"entitiesToUpdate":[],"relationsToCreate":[],"eventsToCreate":[{"entityRef":"grok","type":"EXPIRY","dueAt":"2026-12","precision":"month","policy":"DO_NOT_RENEW","note":"以后不续","evidence":"2026 年 12 月，以后不续"}],"uncertainty":[]})).unwrap()
+    }
+    #[test]
+    fn carrier_provider_and_relation_commit_together() {
+        let mut capture = input();
+        capture.raw_text = "Acme 电话卡的运营商是 Acme Mobile".into();
+        let p: Proposal = serde_json::from_value(serde_json::json!({
+            "entitiesToCreate": [
+                {"ref":"sim","name":"Acme 电话卡","type":"Phone / SIM","status":"ACTIVE","attributes":{},"notes":"","evidence":"Acme 电话卡"},
+                {"ref":"carrier","name":"Acme Mobile","type":"Provider","status":"ACTIVE","attributes":{},"notes":"","evidence":"Acme Mobile"}
+            ],
+            "entitiesToUpdate": [],
+            "relationsToCreate": [{"from":"sim","to":"carrier","type":"ISSUED_BY","note":"运营商","evidence":"运营商是 Acme Mobile"}],
+            "eventsToCreate": [], "uncertainty": []
+        })).unwrap();
+        let (next, _) = apply_proposal(&Snapshot::default(), &capture, &p).unwrap();
+        let carrier = next.entities.iter().find(|e| e.category == "Provider").unwrap();
+        assert_eq!(carrier.template_id.as_deref(), Some("provider"));
+        assert_eq!(next.relations.len(), 1);
+        assert_eq!(next.relations[0].target_id, carrier.id);
+        assert_eq!(next.relations[0].kind, "ISSUED_BY");
     }
     #[test]
     fn transformation_keeps_input_unchanged_and_month_precision() {

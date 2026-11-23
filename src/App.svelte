@@ -4,7 +4,7 @@
   import {localLedgerProposal} from './domain/finance-capture';
   import {monthlyCosts,periodReport,expectedPayments} from './domain/reports';
   import {dateToday} from './domain/ledger';
-  import {formatMoney} from './domain/money';
+  import {formatMoney,moneySchema} from './domain/money';
   import Icon from "./lib/Icon.svelte";
   import { onMount, tick } from "svelte";
   import { invoke, isPersistent, isHttpHost, isWindows, isMobile, isSelfhost, hasWebAccess, setWebAccess } from "./lib/runtime";
@@ -15,7 +15,10 @@
   import { selfRequest } from "./lib/selfhost-auth";
   import CloudSettings from './features/cloud/CloudSettings.svelte';
   import ManualEditor from './features/capture/ManualEditor.svelte';
+  import ConnectionReview from './features/capture/ConnectionReview.svelte';
   import { categoryGroup, categoryLabel, eventLabel, RECORD_GROUPS, relationLabel, statusLabel } from './lib/record-labels';
+  import { isFavorite } from './lib/record-tags';
+  import { connectionGaps, connectionHints, connectionSlots, slotRelations } from './domain/relationships';
   import { clearCloudRetries } from './ai/cloud-client';
   import { listen } from "@tauri-apps/api/event";
   import {
@@ -26,6 +29,7 @@
     unlockDevice,
     setDeviceUnlock,
     loadSnapshot,
+    saveSnapshot,
     lockVault,
     beginTextCapture,
     stageProposal,
@@ -100,7 +104,9 @@
   let accountTimer: ReturnType<typeof setTimeout> | undefined;
   let idleMinutes = 0;
   let recordGroup = "";
+  let connectionsOnly = false, detailFromGraph = false;
   let editorOpen = false;
+  let connectionsOpen = false;
   let editedEntity: Entity | undefined;
   let text = "";
   let query = "";
@@ -149,6 +155,7 @@
   let voiceTimer: number | undefined;
   let voiceEpoch = 0;
   let epoch = 0;
+  let nextServerDiscovery = 0;
   let pendingImport: { text: string; summary: string } | null = null;
   const samples = [
     "Saily 是我唯一一个美国 +1 号码，一个月六块多，主要备用和收藏，目前先保留。",
@@ -173,11 +180,12 @@
     .slice()
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
     .slice(0, 6);
+  $: connectionNeeds = new Set(snapshot.entities.filter(e=>e.privacy!=="SECRET" && (connectionGaps(e,snapshot).length || connectionSlots(e.category).some(slot=>!slotRelations(slot,e.id,snapshot.relations).length && connectionHints(e,slot).length))).map(e=>e.id));
   $: results = searchEntities(
     snapshot,
     interpretedQuery?.search ?? query,
     interpretedQuery?.region ?? "",
-  ).filter(entity => !recordGroup || categoryGroup(entity.category) === recordGroup);
+  ).filter(entity => (!recordGroup || categoryGroup(entity.category) === recordGroup) && (!connectionsOnly || connectionNeeds.has(entity.id)));
   $: selected = snapshot.entities.find(
     (e) => e.id === selectedId && e.privacy !== "SECRET",
   );
@@ -215,6 +223,8 @@
     return snapshot.entities.find((e) => e.id === id)?.name ?? "未知记忆";
   }
   function display(value: unknown) {
+    const amount=moneySchema.safeParse(value);
+    if(amount.success)return formatMoney(amount.data);
     return Array.isArray(value)
       ? value.join(" · ")
       : typeof value === "object"
@@ -229,17 +239,34 @@
   }
   function navigate(next: Page) {
     if (recording || voiceBusy) stopVoice();
-    if (next === "Explore") rootId = selectedId || rootId || snapshot.entities.find(entity => snapshot.relations.some(relation => relation.sourceId === entity.id || relation.targetId === entity.id))?.id || snapshot.entities[0]?.id || "";
+    if (next === "Explore") rootId = "";
     page = next;
+    detailFromGraph = false;
     selectedId = "";
     previewId = "";
     error = "";
   }
   function openEntity(id: string) {
+    if (page === "Explore") { detailFromGraph=true;rootId=id; }
     selectedId = id;
     page = "Memory";
     previewId = "";
     error = "";
+  }
+  function closeDetail() {
+    if (detailFromGraph) page="Explore";
+    selectedId="";
+  }
+  async function favorite(entity: Entity) {
+    if (busy) return;
+    busy=true;
+    try {
+      const next=structuredClone(snapshot), item=next.entities.find(e=>e.id===entity.id)!;
+      item.tags=item.tags.some(isFavorite)?item.tags.filter(t=>!isFavorite(t)):[...item.tags,"⭐ 收藏"];
+      item.updatedAt=new Date().toISOString();
+      snapshot=await saveSnapshot(next);
+    } catch(value) {error=readable(value);}
+    finally {busy=false;}
   }
   function editRecord(entity?: Entity) {
     editedEntity = entity;
@@ -301,6 +328,7 @@
     config = { ...DEFAULT_PROVIDER };
     settingsConfig = { ...DEFAULT_PROVIDER };
     syncStatus = { ...emptySync };
+    nextServerDiscovery = 0;
     syncError = "";
     busy = false;
     parsingId = "";
@@ -312,6 +340,7 @@
   }
   async function sync() {
     if (!isPersistent || mode !== "ready" || busy || syncBusy || document.hidden) return;
+    syncBusy = true;
     const token = epoch;
     const revision = snapshot.revision;
     try {
@@ -324,9 +353,17 @@
         mode = "unlock";
         return;
       }
-      syncBusy = true;
-      const settings = await invoke<SyncStatus>("sync_status");
+      let settings = await invoke<SyncStatus>("sync_status");
       if (token !== epoch || mode !== "ready") return;
+      if (!isSelfhost && !settings.configured && Date.now() >= nextServerDiscovery) {
+        nextServerDiscovery = Date.now() + 300000;
+        const cloud = await invoke<{connected:boolean}>("cloud_status");
+        if(cloud.connected){
+          const directory=await invoke<{servers:Array<{id:string}>}>("cloud_request",{path:"/api/account/servers"});
+          if(token!==epoch||mode!=="ready")return;
+          if(directory.servers.length===1)settings=await invoke<SyncStatus>("sync_cloud_connect",{id:directory.servers[0].id});
+        }
+      }
       syncStatus = settings;
       if (settings.automatic && !syncStatus.conflicts.length) {
         try {
@@ -348,7 +385,7 @@
       )
         snapshot = fresh;
     } catch (e) {
-      error = readable(e);
+      if(token===epoch)error = readable(e);
     } finally {
       syncBusy = false;
     }
@@ -364,7 +401,7 @@
       idleMinutes = status.idleMinutes ?? 0;
       mode = !status.exists ? "create" : status.unlocked ? "ready" : "unlock";
       if (!status.unlocked && status.exists && deviceUnlockEnabled) { await enterDevice(); return; }
-      if (status.unlocked) { await refreshSnapshot(); void refreshTools(); }
+      if (status.unlocked) { await refreshSnapshot(); void refreshTools(); void sync(); }
     } catch (e) { error = readable(e); mode = isHttpHost ? "access" : "unlock"; }
   }
   async function refreshSnapshot() {
@@ -605,7 +642,7 @@
     if(!capture)throw new Error('原文未保存');
     snapshot=await stageProposal(capture.id,proposal,'本地账本');
     previewId=snapshot.proposals?.find(p=>p.captureId===capture.id&&p.status==='PENDING')?.id??'';
-    navigate('Inbox');
+    page='Inbox';
   }
   async function capture(parseNow: boolean) {
     if (!text.trim() || busy || recording || voiceBusy) return;
@@ -671,9 +708,10 @@
       if (token !== epoch) return;
       snapshot = next;
       selectedId = "";
-      previewId = id;
-      page = "Inbox";
-      flash("已撤销，提案已回到待确认");
+      const financial=next.proposals?.find(p=>p.id===id)?.status==='DISMISSED';
+      previewId = financial?'':id;
+      page = financial?'Ledger':'Inbox';
+      flash(financial?'已撤销，账本已生成抵消记录':'已撤销，提案已回到待确认');
     } catch (e) {
       if (token === epoch) error = readable(e);
     } finally {
@@ -968,7 +1006,7 @@
   async function download(filename: string, payload: string) {
     if (isTauri) { await invoke("save_export_file", { filename, payload }); return; }
     const url = URL.createObjectURL(
-      new Blob([payload], { type: "application/json" }),
+      new Blob([payload], { type: filename.endsWith('.csv')?'text/csv;charset=utf-8':"application/json" }),
     );
     const a = document.createElement("a");
     a.href = url;
@@ -1011,28 +1049,34 @@
   }
   async function applyFile(payload: string, kind: "import" | "restore") {
     error = "";
+    if (busy) return;
+    busy = true;
+    epoch++;
     try {
       if (kind === "restore") {
         const secret = prompt("恢复将替换当前记忆库。输入备份主密码以继续。");
         if (!secret) return;
         snapshot = await importBackup(payload, secret);
+        const warning = (snapshot as VaultSnapshot & {restoreWarning?:string}).restoreWarning;
         deviceUnlockEnabled = false;
         rememberDevice = false;
         mode = "ready";
         await refreshSnapshot();
+        selectedId = "";rootId = "";previewId = "";pendingImport=null;syncError="";
         config = { ...(snapshot.aiConfig ?? DEFAULT_PROVIDER) };
         settingsConfig = { ...config };
         flash("加密备份已恢复");
+        if(warning) error=warning;
       } else {
         const summary = await previewAtlasJson(payload);
         pendingImport = {
           text: payload,
-          summary: `${summary.entityCount} 个实体 · ${summary.relationCount} 条关系 · ${summary.eventCount} 个事件`,
+          summary: `${summary.entityCount} 个实体 · ${summary.relationCount} 条关系 · ${summary.eventCount} 个事件${summary.transactionCount?` · ${summary.transactionCount} 笔流水`:''}`,
         };
       }
     } catch (e) {
       error = readable(e);
-    }
+    } finally {busy = false;}
   }
   async function commitImport() {
     if (!pendingImport) return;
@@ -1326,13 +1370,14 @@
               </div>{/if}{/if}
         {:else if page === "Memory"}
           {#if selected}<div class="detail-header">
-              <button class="text-button" on:click={() => (selectedId = "")}
-                >← 返回记忆列表</button
-              ><div class="button-row"><button class="secondary" on:click={() => editRecord(selected)}>编辑</button><button class="primary" on:click={() => explore(selected.id)}>关系图</button></div>
+              <button class="text-button" on:click={closeDetail}
+                >← {detailFromGraph?"返回关系图":"返回记忆列表"}</button
+              ><div class="button-row"><button class="secondary" aria-pressed={selected.tags.some(isFavorite)} disabled={busy} on:click={()=>favorite(selected)}>{selected.tags.some(isFavorite)?"★ 已收藏":"☆ 收藏"}</button><button class="secondary" on:click={() => editRecord(selected)}>编辑</button><button class="primary" on:click={() => explore(selected.id)}>关系图</button></div>
             </div>
             <article class="detail-card">
               <span class="pill">{categoryLabel(selected.category)}</span>
               <h1>{selected.name}</h1>
+              {#if selected.tags.length}<div class="tag-options">{#each selected.tags as tag}<span class="pill">{tag}</span>{/each}</div>{/if}
               <p class="muted">
                 {statusLabel(selected.status)} · 最近更新 {date(selected.updatedAt)}
               </p>
@@ -1343,10 +1388,8 @@
                     <dd>{display(field.value)}</dd>
                   </div>{/each}
               </dl>
-              {#if !selected.fields.length}<p class="muted">
-                  这条记忆还没有更多属性。
-                </p>{/if}
               <h2>关联</h2>
+              {#if connectionNeeds.has(selected.id)}<button class="secondary" on:click={()=>editRecord(selected)}>补全关联{connectionGaps(selected,snapshot).length?`：${connectionGaps(selected,snapshot).map(s=>s.label).join("、")}`:""}</button>{/if}
               {#if selectedRelations.length}{#each selectedRelations as relation}<button
                     class="relation-row"
                     on:click={() =>
@@ -1392,9 +1435,9 @@
                     </footer>
                   </blockquote>{/each}{/if}
             </article>{:else}<div class="page-heading">
-              <h1>你的记忆</h1><button class="primary" on:click={() => editRecord()}>＋ 新建记录</button>
+              <h1>你的记忆</h1><div class="button-row"><button class="secondary" on:click={()=>connectionsOpen=true}>从字段补全关联</button><button class="primary" on:click={() => editRecord()}>＋ 新建记录</button></div>
             </div>
-            <div class="record-filters" aria-label="记录分类"><button class:chosen={!recordGroup} on:click={() => recordGroup = ""}>全部</button>{#each RECORD_GROUPS as group}<button class:chosen={recordGroup === group.label} on:click={() => recordGroup = group.label}>{group.label}</button>{/each}</div>
+            <div class="record-filters" aria-label="记录分类"><button class:chosen={!recordGroup && !connectionsOnly} on:click={() => {recordGroup = "";connectionsOnly=false;}}>全部</button>{#each RECORD_GROUPS as group}<button class:chosen={recordGroup === group.label} on:click={() => recordGroup = group.label}>{group.label}</button>{/each}{#if connectionNeeds.size}<button class:chosen={connectionsOnly} on:click={()=>connectionsOnly=!connectionsOnly}>待补关联 {connectionNeeds.size}</button>{/if}</div>
             <div class="search-box" role="search" aria-label="查找已确认的记忆">
               <span>⌕</span><input
                 bind:value={query}
@@ -1439,7 +1482,7 @@
                     >
                     <div>
                       <strong>{entity.name}</strong><small
-                        >{categoryLabel(entity.category)} · {statusLabel(entity.status)}</small
+                        >{categoryLabel(entity.category)} · {statusLabel(entity.status)}{connectionNeeds.has(entity.id)?" · 待补关联":""}</small
                       >
                     </div>
                     <span>↗</span></button
@@ -1448,28 +1491,16 @@
                 没有找到相关记忆。试试名称、地区或备注中的关键词。
               </div>{/if}{/if}
         {:else if page === "Ledger"}
-          <LedgerPage {snapshot} {config} saved={next=>snapshot=next} stage={stageFinance} edit={entity=>editRecord(entity)} />
+          <LedgerPage {snapshot} {config} {download} saved={next=>snapshot=next} stage={stageFinance} edit={entity=>editRecord(entity)} />
         {:else if page === "Explore"}
-          <button class="text-button" on:click={() => openEntity(rootId)}
-            >← 返回记忆详情</button
-          >
           <div class="page-heading">
             <h1>关系图</h1><div class="button-row"><button class="secondary" on:click={()=>graphMode="relation"}>关系</button><button class="secondary" on:click={()=>graphMode="money"}>金钱</button></div>
           </div>
-          <label class="root-picker"
-            >从这里开始<select bind:value={rootId}
-              ><option value="">选择一个记忆</option
-              >{#each snapshot.entities.filter((e) => e.privacy !== "SECRET") as entity}<option
-                  value={entity.id}>{entity.name}</option
-                >{/each}</select
-            ></label
-          >{#if graphMode==="money"}<MoneyGraph {snapshot} {rootId} month={currentMonth} onOpen={openEntity}/>{:else if rootId}<ExploreCanvas
+          {#if graphMode==="money"}<MoneyGraph {snapshot} {rootId} month={currentMonth} onOpen={openEntity}/>{:else}<ExploreCanvas
               {snapshot}
               {rootId}
               onOpen={openEntity}
-            />{:else}<div class="empty-state">
-              选择一个记忆
-            </div>{/if}
+            />{/if}
         {:else if page === "Settings"}
           <div class="page-heading">
             <h1>设置</h1>
@@ -1479,17 +1510,18 @@
             <div class="preference-row"><strong>记住这台电脑</strong><button class="preference-switch" class:enabled={deviceUnlockEnabled} role="switch" aria-checked={deviceUnlockEnabled} aria-label="记住这台电脑" on:click={toggleDeviceUnlock} disabled={busy || !isTauri}><span></span></button></div>
             <div class="preference-row"><strong>锁定 / 解锁</strong><kbd>Ctrl Shift L</kbd></div>{:else}<div class="section-heading"><h2>记忆库</h2></div><button class="secondary" on:click={lock}>锁定</button>{/if}
           </section>
+          <section class="panel settings-panel"><div class="section-heading"><h2>账本</h2><button class="secondary" on:click={()=>navigate("Ledger")}>账户与分录设置</button></div></section>
           {#if isPersistent}<section class="panel settings-panel"><label class="preference-row"><strong>自动锁定</strong><select bind:value={idleMinutes} on:change={saveLockPolicy}><option value={0}>不自动锁定</option><option value={5}>5 分钟</option><option value={15}>15 分钟</option><option value={30}>30 分钟</option><option value={60}>1 小时</option></select></label></section>{/if}
           {#if isPersistent}<SyncSettings bind:status={syncStatus} changed={refreshSnapshot} />{/if}
           {#if syncError}<p class="error" role="alert">{syncError}</p>{/if}
           {#if isSelfhost}<ServerSecurity />{/if}
           <section id="cloud-account" class="panel settings-panel">
-            {#if isTauri}<CloudSettings changed={async()=>{snapshot=await loadSnapshot();}} />{:else}<h2>官网账户</h2><a class="secondary" href="https://atlas.sayori.org/login" target="_blank" rel="noreferrer">登录</a>{/if}
+            {#if isPersistent}<CloudSettings changed={async()=>{await refreshSnapshot();nextServerDiscovery=0;void sync();}} />{/if}
           </section>
           <section class="panel settings-panel">
             <h2>模型</h2>
             <div class="provider-options">
-              {#each [["local", "本地模型"], ["ollama", "Ollama"], ["openai-compatible", "自带 API Key"], ["cloud", "官网云服务"]].filter(([kind]) => (kind !== "local" || isWindows) && (kind !== "cloud" || isTauri)) as [kind, title]}<button
+              {#each [["local", "本地模型"], ["ollama", "Ollama"], ["openai-compatible", "自带 API Key"], ["cloud", "官网云服务"]].filter(([kind]) => (kind !== "local" || isWindows) && (kind !== "cloud" || isPersistent)) as [kind, title]}<button
                   class:chosen={settingsConfig.kind === kind}
                   disabled={modelBusy}
                   on:click={() => configure(kind as ProviderConfig["kind"])}
@@ -1732,3 +1764,4 @@
   {/if}
 {/if}
 {#if mode === "ready" && editorOpen}<ManualEditor {snapshot} entity={editedEntity} saved={recordSaved} close={() => editorOpen = false} />{/if}
+{#if mode === "ready" && connectionsOpen}<ConnectionReview {snapshot} saved={value=>{snapshot=value;connectionsOpen=false;flash("已补全关联");}} close={()=>connectionsOpen=false}/>{/if}

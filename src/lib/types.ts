@@ -88,6 +88,7 @@ export interface VaultStatus {
 }
 
 export interface ImportPreview {
+  transactionCount?: number;
   entityCount: number;
   relationCount: number;
   eventCount: number;
@@ -141,6 +142,7 @@ export const RELATION_TYPES = [
 ] as const;
 
 export const TEMPLATES: Template[] = [
+  { id: "provider", label: "Provider", category: "Provider", fields: [{key:"url",valueType:"url",privacy:"PRIVATE",searchable:true}] },
   {
     id: "email",
     label: "Email",
@@ -279,6 +281,7 @@ export const TEMPLATES: Template[] = [
     label: "Project",
     category: "Project",
     fields: [
+      { key: "commercial", valueType: "boolean", privacy: "PRIVATE", searchable: false },
       {
         key: "purpose",
         valueType: "text",

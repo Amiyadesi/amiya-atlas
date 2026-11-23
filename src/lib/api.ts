@@ -162,6 +162,7 @@ function importSummary(
   );
   return {
     entityCount: imported.entities.length,
+    transactionCount: imported.transactions?.length??0,
     relationCount: imported.relations.length,
     eventCount: imported.events.length,
     duplicateEntityCount: imported.entities.filter((entity) =>
@@ -240,7 +241,7 @@ export async function importAtlasJson(text: string): Promise<VaultSnapshot> {
       )
     )
       throw new Error("导入事件 ID 冲突");
-    browserSnapshot = {
+    const next:VaultSnapshot = {
       ...browserSnapshot,
       entities: [
         ...browserSnapshot.entities,
@@ -262,6 +263,17 @@ export async function importAtlasJson(text: string): Promise<VaultSnapshot> {
       ],
       revision: browserSnapshot.revision + 1,
     };
+    for(const key of ['ledgerAccounts','transactions','allocationRules','financeRecords','opaqueRecords'] as const){
+      const identity=(item:any)=>key==='opaqueRecords'?`${item.kind}:${item.data.id}`:item.id;
+      const items=new Map((browserSnapshot[key]??[]).map(item=>[identity(item),item]));
+      for(const item of imported[key]??[]){const previous=items.get(identity(item));if(previous&&JSON.stringify(previous)!==JSON.stringify(item))throw new Error('导入财务 ID 冲突');items.set(identity(item),item);}
+      (next as any)[key]=[...items.values()];
+    }
+    const keys=new Map<string,NonNullable<VaultSnapshot['transactions']>[number]>(),remap=new Map<string,string>();
+    for(const t of next.transactions??[]){const previous=keys.get(t.idempotencyKey);if(previous){if(JSON.stringify({...t,id:previous.id,createdAt:previous.createdAt})!==JSON.stringify(previous))throw new Error('同一幂等键包含不同流水');remap.set(t.id,previous.id);}else keys.set(t.idempotencyKey,t);}
+    next.transactions=[...keys.values()].map(t=>t.reversalOf&&remap.has(t.reversalOf)?{...t,reversalOf:remap.get(t.reversalOf)}:t);
+    validateLedger(next,browserSnapshot);
+    browserSnapshot=next;
     return structuredClone(browserSnapshot);
   }
   return invoke<VaultSnapshot>("import_atlas_json", { text });
@@ -284,7 +296,7 @@ export async function exportRedacted(maskPrivate = true): Promise<string> {
     );
     for (const entity of redacted.entities) {
       entity.fields = entity.fields.filter(
-        (field) => field.privacy !== "SECRET" && field.valueType!=='money' && !['notes','cost','monthly_cost','currency','avoidable_project','project'].includes(field.key),
+        (field) => field.privacy !== "SECRET" && field.valueType!=='money' && !['note','notes','description','cost','monthly_cost','fee','quote','price','amount','balance','currency','avoidable_project','project'].includes(field.key.toLowerCase()),
       );
       for (const field of entity.fields) {
         if (maskPrivate && field.privacy === "PRIVATE") {
@@ -303,6 +315,8 @@ export async function exportRedacted(maskPrivate = true): Promise<string> {
     redacted.events = redacted.events.filter(
       (event) => !secretIds.has(event.entityId),
     );
+    for(const relation of redacted.relations)delete relation.note;
+    for(const event of redacted.events)delete event.note;
     if (maskPrivate) redacted.events = [];
     return JSON.stringify(
       { format: "amiya-atlas", version: 1, snapshot: redacted },

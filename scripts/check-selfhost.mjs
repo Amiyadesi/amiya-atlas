@@ -20,6 +20,7 @@ try {
   assert.equal((await request("/api/auth/sign-up/email",{email:"blocked@example.invalid",password:"fixture-password-only",name:"Blocked"})).status,403);
   assert.equal((await request("/api/setup",{email:"owner@example.invalid",password:"fixture-password-only",setupToken:"fixture-setup-code-only-not-for-use"})).status,200);
   assert.equal((await request("/api/setup",{})).status,409);
+  const vault=await request("/api/invoke",{command:"vault_status",args:{}});assert.equal(vault.status,200);assert.equal(vault.value.ok,true);assert.equal(vault.value.data.exists,false);
   const setup=await request("/api/auth/two-factor/enable",{password:"fixture-password-only"});assert.equal(setup.status,200);assert(setup.value.backupCodes?.length);const secret=new URL(setup.value.totpURI).searchParams.get("secret");assert.equal((await request("/api/auth/two-factor/verify-totp",{code:totp(secret)})).status,200);
   await request("/api/auth/sign-out",{});cookie="";
   const login=await request("/api/auth/sign-in/email",{email:"owner@example.invalid",password:"fixture-password-only"});assert.equal(login.value.twoFactorRedirect,true);assert(!(await request("/api/auth/get-session")).value);

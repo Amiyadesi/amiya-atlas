@@ -1,4 +1,4 @@
-use crate::{ai, capture, domain::{self, AtlasFile, Result}, sync, vault::VaultService};
+use crate::{ai, capture, cloud, domain::{self, AtlasFile, Result}, sync, vault::VaultService};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
@@ -19,11 +19,12 @@ pub fn dispatch(command: &str, args: Value, shared: &Arc<Mutex<VaultService>>) -
         "load_snapshot"=>Ok(json!(vault.load()?)),
         "save_snapshot"=>Ok(json!(vault.save(arg(&args,"snapshot")?,&args["unlinkIds"].as_array().into_iter().flatten().filter_map(|v|v.as_str().map(String::from)).collect::<Vec<_>>())?)),
         "export_backup"=>Ok(json!(vault.backup()?)),
-        "import_backup"=>{let snapshot=vault.restore(&arg::<String>(&args,"payload")?,&arg::<String>(&args,"password")?)?;sync::initialize_server(&mut vault)?;Ok(json!(snapshot))},
+        "export_sync_backup"=>Ok(json!(vault.sync_backup(&sync::portable(&vault.load()?))?)),
+        "import_backup"=>{let snapshot=vault.restore(&arg::<String>(&args,"payload")?,&arg::<String>(&args,"password")?)?;let mut value=json!(snapshot);if let Err(error)=sync::initialize_server(&mut vault){value["restoreWarning"]=json!(format!("已导入；同步设置未完成：{error}"));}Ok(value)},
         "export_redacted"=>Ok(json!(serde_json::to_string_pretty(&AtlasFile{format:"amiya-atlas".into(),version:1,snapshot:vault.load()?.redacted(arg(&args,"maskPrivate")?)}).map_err(|_|"导出失败")?)),
         "preview_atlas_json"=>{
             let imported=domain::parse_import(&arg::<String>(&args,"text")?)?;let current=vault.load()?;
-            Ok(json!({"entityCount":imported.entities.len(),"relationCount":imported.relations.len(),"eventCount":imported.events.len(),"duplicateEntityCount":imported.entities.iter().filter(|e|current.entities.iter().any(|v|v.id==e.id)).count(),"duplicateRelationCount":imported.relations.iter().filter(|r|current.relations.iter().any(|v|v.id==r.id || (v.source_id==r.source_id&&v.kind==r.kind&&v.target_id==r.target_id))).count(),"duplicateEventCount":imported.events.iter().filter(|e|current.events.iter().any(|v|v.id==e.id)).count()}))
+            Ok(json!({"transactionCount":imported.transactions.len(),"entityCount":imported.entities.len(),"relationCount":imported.relations.len(),"eventCount":imported.events.len(),"duplicateEntityCount":imported.entities.iter().filter(|e|current.entities.iter().any(|v|v.id==e.id)).count(),"duplicateRelationCount":imported.relations.iter().filter(|r|current.relations.iter().any(|v|v.id==r.id || (v.source_id==r.source_id&&v.kind==r.kind&&v.target_id==r.target_id))).count(),"duplicateEventCount":imported.events.iter().filter(|e|current.events.iter().any(|v|v.id==e.id)).count()}))
         },
         "import_atlas_json"=>{let imported=domain::parse_import(&arg::<String>(&args,"text")?)?;let snapshot=vault.load()?.merge(&imported)?;Ok(json!(vault.save(snapshot,&[])?))},
         "capture_website_account"=>{let req:domain::CaptureRequest=arg(&args,"request")?;Ok(json!(vault.capture(&req.title,&req.url,&req.identity_id)?.0))},
@@ -54,6 +55,12 @@ pub fn dispatch(command: &str, args: Value, shared: &Arc<Mutex<VaultService>>) -
         "sync_adopt"=>Ok(json!(sync::adopt(&mut vault,&arg::<String>(&args,"password")?)?)),
         "sync_server_start"=>sync::server_start(&arg::<String>(&args,"url")?),
         "sync_server_poll"=>sync::server_poll(&mut vault,&arg::<String>(&args,"url")?,&arg::<String>(&args,"deviceCode")?,arg(&args,"automatic")?),
+        "sync_cloud_connect"=>sync::cloud_connect(&mut vault,&arg::<String>(&args,"id")?),
+        "cloud_status"=>{let session=vault.load()?.cloud_session;Ok(match session{Some(s)=>json!({"connected":s.expires_at>chrono::Utc::now().timestamp_millis(),"email":s.email,"expiresAt":s.expires_at}),None=>json!({"connected":false})})},
+        "cloud_device_start"=>cloud::device_start(&mut vault),
+        "cloud_device_poll"=>cloud::device_poll(&mut vault),
+        "cloud_request"=>cloud::account_request(&mut vault,&arg::<String>(&args,"path")?,args.get("body").filter(|b|!b.is_null())),
+        "cloud_logout"=>{vault.cloud_device=None;let session=vault.load()?.cloud_session;vault.set_cloud_session(None)?;if let Some(s)=session{cloud::request("/api/auth/sign-out",Some(&json!({})),Some(&s.token))?;}Ok(Value::Null)},
         "sync_disconnect"=>{vault.clear_sync()?;Ok(Value::Null)},
         "voice_status"=>Ok(json!({"supported":false,"ready":false,"model":"","prerequisite":null})),
         "quick_capture_status"=>Ok(json!({"enabled":false,"shortcuts":[]})),

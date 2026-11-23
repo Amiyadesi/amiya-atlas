@@ -1,7 +1,8 @@
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
 import { bodyLimit } from "hono/body-limit";
-import { timingSafeEqual } from "node:crypto";
+import { timingSafeEqual, randomUUID, randomBytes } from "node:crypto";
+import { syncSigner } from "./sync-identity";
 import Stripe from "stripe";
 import { z } from "zod";
 import { config, priceId } from "./config";
@@ -16,6 +17,8 @@ import {
   cloudSnapshot,
 } from "../../src/ai/cloud-contract";
 export const ledger = new Ledger(db, Buffer.from(config.CACHE_KEY, "hex"));
+const syncIdentity = syncSigner(Buffer.from(config.CACHE_KEY, "hex"));
+db.exec("CREATE TABLE IF NOT EXISTS personal_servers(id TEXT PRIMARY KEY,user_id TEXT NOT NULL,url TEXT NOT NULL,name TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(user_id,url));");
 const stripe = config.STRIPE_SECRET_KEY
   ? new Stripe(config.STRIPE_SECRET_KEY, {
       maxNetworkRetries: 2,
@@ -76,7 +79,7 @@ app.use("*", async (c, next) => {
   }
   await next();
 });
-app.get("/health", (c) => c.json({ ok: true, version: "0.4.1" }));
+app.get("/health", (c) => c.json({ ok: true, version: "0.9.1" }));
 app.get("/api/features", (c) =>
   c.json({
     email: Boolean(config.RESEND_API_KEY),
@@ -86,7 +89,7 @@ app.get("/api/features", (c) =>
     cloud: config.CLOUD_ENABLED,
     billing: config.BILLING_ENABLED,
     downloadUrl: config.DOWNLOAD_URL ?? null,
-    version: "0.4.1",
+    version: "0.9.1",
   }),
 );
 app.on(["GET", "POST"], "/api/auth/*", (c) => auth.handler(c.req.raw));
@@ -121,6 +124,31 @@ app.use("/api/account/*", async (c, next) => {
 app.get("/api/account/balance", (c) =>
   c.json(accountBalance(c.get("user").id)),
 );
+app.get("/api/account/servers", c => c.json({ servers: db.prepare("SELECT id,url,name FROM personal_servers WHERE user_id=? ORDER BY created_at").all(c.get("user").id) }));
+app.post("/api/account/servers", async c => {
+  const input = z.strictObject({ url: z.string().url().max(2048), name: z.string().trim().min(1).max(100) }).parse(await c.req.json());
+  const url = new URL(input.url);
+  if (url.protocol !== "https:" || url.username || url.password || url.pathname !== "/" || url.search || url.hash) return c.json({ message: "服务器需要 HTTPS 来源地址" }, 400);
+  const userId = c.get("user").id;
+  const existing = db.prepare("SELECT id FROM personal_servers WHERE user_id=? AND url=?").get(userId, url.origin) as { id: string } | undefined;
+  const count = (db.prepare("SELECT COUNT(*) AS n FROM personal_servers WHERE user_id=?").get(userId) as { n: number }).n;
+  if (!existing && count >= 10) return c.json({ message: "请先移除不再使用的服务器" }, 400);
+  const serverId = existing?.id ?? randomUUID();
+  db.prepare("INSERT INTO personal_servers VALUES(?,?,?,?,?) ON CONFLICT(user_id,url) DO UPDATE SET name=excluded.name").run(serverId, userId, url.origin, input.name, new Date().toISOString());
+  return c.json({ serverId, userId, url: url.origin, publicKey: syncIdentity.publicKey });
+});
+app.post("/api/account/servers/remove", async c => {
+  const { id } = z.strictObject({ id: z.string().uuid() }).parse(await c.req.json());
+  db.prepare("DELETE FROM personal_servers WHERE id=? AND user_id=?").run(id, c.get("user").id);
+  return c.json({ ok: true });
+});
+app.post("/api/account/sync-ticket", async c => {
+  const { id } = z.strictObject({ id: z.string().uuid() }).parse(await c.req.json());
+  const userId = c.get("user").id;
+  const server = db.prepare("SELECT url FROM personal_servers WHERE id=? AND user_id=?").get(id, userId) as { url: string } | undefined;
+  if (!server) return c.json({ message: "服务器未关联此账户" }, 404);
+  return c.json({ url: server.url, ticket: syncIdentity.issue({ aud: server.url, serverId: id, userId, exp: Date.now() + 90_000, nonce: randomBytes(16).toString("hex") }) });
+});
 app.post("/api/account/model", async (c) => {
   const { model } = z.strictObject({ model: z.string().min(1).max(100) }).parse(await c.req.json());
   if (!modelProviders.has(model)) throw new LedgerError("MODEL_NOT_AVAILABLE", 400);

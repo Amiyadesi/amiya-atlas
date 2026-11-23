@@ -2,7 +2,7 @@
   "name": "@relakeep/web",
   "private": true,
   "type": "module",
-  "version": "0.4.1",
+  "version": "0.9.3",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 4321",
     "build": "vite build && node pages-build.mjs",

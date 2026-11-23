@@ -7,7 +7,7 @@ import type {
 } from "../lib/types";
 import { newId } from "../lib/types";
 import { reverseTransaction } from './ledger';
-import { negate } from './money';
+import { negate,moneySchema,formatMoney } from './money';
 
 export interface ChangeRecords {
   entities: Entity[];
@@ -355,7 +355,7 @@ export const statusLabel = (status: string) =>
     NEEDS_REVIEW: "待检查",
   })[status] ?? status;
 const display = (value: unknown) =>
-  Array.isArray(value)
+  moneySchema.safeParse(value).success ? formatMoney(moneySchema.parse(value)) : Array.isArray(value)
     ? value.join("、")
     : typeof value === "boolean"
       ? value

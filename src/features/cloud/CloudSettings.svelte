@@ -1,13 +1,24 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { invoke } from "../../lib/runtime";
+  import { invoke, isTauri, isSelfhost } from "../../lib/runtime";
+  import { selfRequest } from "../../lib/selfhost-auth";
   export let changed: () => Promise<void>;
   let connected = false,
     email = "",
     busy = false,
     message = "",
     userCode = "",
-    balance: { monthly: number; topup: number; total: number } | null = null;
+    balance: {
+      monthly: number;
+      topup: number;
+      total: number;
+      unlimited?: boolean;
+      canChooseModels?: boolean;
+      selectedModel?: string;
+      models?: Array<{ id: string; name: string }>;
+    } | null = null;
+  let verificationUrl = "",
+    selectedModel = "";
   let features: { billing: boolean; cloud: boolean } | null = null;
   let currency = "cny";
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -24,6 +35,7 @@
     balance = connected
       ? await invoke("cloud_request", { path: "/api/account/balance" })
       : null;
+    selectedModel = balance?.selectedModel ?? "";
   }
   async function run(task: () => Promise<void>) {
     busy = true;
@@ -54,8 +66,15 @@
       }
       userCode = "";
       message = "已登录";
-      await changed();
       await refresh();
+      await changed();
+      if (isSelfhost) {
+        try {
+          await selfRequest("/api/security/cloud-link", {});
+        } catch {
+          message = "已登录；服务器尚未关联，可在同步设置中重试";
+        }
+      }
     } catch (e) {
       if (!disposed) {
         userCode = "";
@@ -64,12 +83,22 @@
     }
   }
   async function connect() {
+    const tab = !isTauri ? window.open("about:blank", "_blank") : null;
+    if (tab) tab.opener = null;
     await run(async () => {
       if (timer) clearTimeout(timer);
-      const result = await invoke<{ userCode: string }>("cloud_device_start");
+      const result = await invoke<{
+        userCode: string;
+        verificationUrl?: string;
+      }>("cloud_device_start");
       userCode = result.userCode;
+      verificationUrl =
+        result.verificationUrl ??
+        `https://atlas.sayori.org/device?user_code=${encodeURIComponent(result.userCode)}`;
+      if (tab) tab.location.href = verificationUrl;
       timer = setTimeout(() => void poll(), 5000);
     });
+    if (!userCode && tab) tab.close();
   }
   async function logout() {
     await run(async () => {
@@ -84,6 +113,8 @@
     });
   }
   async function buy(kind: string) {
+    const tab = !isTauri ? window.open("about:blank", "_blank") : null;
+    if (tab) tab.opener = null;
     await run(async () => {
       const key = kind + ":" + currency;
       const requestId = purchases.get(key) ?? crypto.randomUUID();
@@ -92,17 +123,25 @@
         path: "/api/account/checkout",
         body: { kind, currency, requestId },
       });
-      await invoke("cloud_open_payment", { url: result.url });
+      if (isTauri) await invoke("cloud_open_payment", { url: result.url });
+      else if (tab) tab.location.href = result.url;
+      else throw new Error("请允许打开付款页面后重试");
     });
+    if (message && tab) tab.close();
   }
   async function portal() {
+    const tab = !isTauri ? window.open("about:blank", "_blank") : null;
+    if (tab) tab.opener = null;
     await run(async () => {
       const result = await invoke<{ url: string }>("cloud_request", {
         path: "/api/account/portal",
         body: {},
       });
-      await invoke("cloud_open_payment", { url: result.url });
+      if (isTauri) await invoke("cloud_open_payment", { url: result.url });
+      else if (tab) tab.location.href = result.url;
+      else throw new Error("请允许打开付款页面后重试");
     });
+    if (message && tab) tab.close();
   }
   onMount(() => {
     void run(refresh);
@@ -124,41 +163,59 @@
       >
     </div>
     <div class="cloud-balance">
-      <strong>{balance?.total ?? "—"} <small>次可用</small></strong><span
+      <strong
+        >{balance?.unlimited ? "不限次数" : (balance?.total ?? "—")}
+        <small>{balance?.unlimited ? "" : "次可用"}</small></strong
+      ><span
         >本月 {balance?.monthly ?? "—"} · 永久加量 {balance?.topup ?? "—"}</span
       ><button disabled={busy} on:click={() => run(refresh)}>刷新</button>
     </div>
-    {#if features?.billing}<div class="cloud-actions">
-      <label
-        >币种<select bind:value={currency}
-          ><option value="cny">CNY ¥20</option><option value="hkd"
-            >HKD HK$23.50</option
-          ><option value="usd">USD US$2.99</option></select
+    {#if balance?.models?.length}<label
+        >云模型<select
+          bind:value={selectedModel}
+          disabled={busy}
+          on:change={() =>
+            run(async () => {
+              balance = await invoke("cloud_request", {
+                path: "/api/account/model",
+                body: { model: selectedModel },
+              });
+              selectedModel = balance?.selectedModel ?? "";
+            })}
+          >{#each balance.models as model}<option
+              value={model.id}
+              disabled={!balance.canChooseModels &&
+                model.id !== balance.models?.[0].id}>{model.name}</option
+            >{/each}</select
         ></label
-      ><button
-        disabled={busy || !features?.billing}
-        on:click={() => buy("monthly")}>月套餐 · 300 次</button
-      ><button
-        disabled={busy || !features?.billing}
-        on:click={() => buy("topup")}>加量包 · 300 次</button
-      >
-    </div>
-    <button disabled={busy || !features?.billing} on:click={portal}
-      >管理订阅 / 付款</button
-    >{/if}
+      >{/if}
+    {#if features?.billing}<div class="cloud-actions">
+        <label
+          >币种<select bind:value={currency}
+            ><option value="cny">CNY ¥20</option><option value="hkd"
+              >HKD HK$23.50</option
+            ><option value="usd">USD US$2.99</option></select
+          ></label
+        ><button
+          disabled={busy || !features?.billing}
+          on:click={() => buy("monthly")}>月套餐 · 300 次</button
+        ><button
+          disabled={busy || !features?.billing}
+          on:click={() => buy("topup")}>加量包 · 300 次</button
+        >
+      </div>
+      <button disabled={busy || !features?.billing} on:click={portal}
+        >管理订阅 / 付款</button
+      >{/if}
   {:else}<button
       class="connect"
       disabled={busy || !!userCode}
       on:click={connect}>登录</button
     >{/if}
   {#if userCode}<div class="device-code">{userCode}</div>
-    <p role="status">在浏览器核对设备码，批准连接。</p>{/if}
-  <button
-    disabled={busy}
-    on:click={() =>
-      run(async () => {
-        await invoke("cloud_open", { path: "/pricing" });
-      })}>查看套餐</button
+    <a href={verificationUrl} target="_blank" rel="noreferrer">继续登录</a>{/if}
+  <a href="https://atlas.sayori.org/pricing" target="_blank" rel="noreferrer"
+    >查看套餐</a
   >
   {#if message}<p class="status" role="status">{message}</p>{/if}
 </div>

@@ -240,7 +240,7 @@ impl Snapshot {
         out.entities.retain(|e| !secret_ids.contains(&e.id));
         for (i, e) in out.entities.iter_mut().enumerate() {
             if mask_private && e.privacy != "PUBLIC" { e.name = format!("Asset {}", i + 1); e.tags.clear(); }
-            e.fields.retain(|f| f.privacy != "SECRET" && f.value_type != "money" && !["notes","cost","monthly_cost","currency","avoidable_project","project"].contains(&f.key.as_str()));
+            e.fields.retain(|f| f.privacy != "SECRET" && f.value_type != "money" && !["note","notes","description","cost","monthly_cost","fee","quote","price","amount","balance","currency","avoidable_project","project"].contains(&f.key.to_lowercase().as_str()));
             for f in &mut e.fields {
                 f.source_of_truth = None;
                 if mask_private && f.privacy == "PRIVATE" { f.value = match f.value_type.as_str() { "number" => Value::from(0), "boolean" => Value::Bool(false), "json" => Value::Null, _ => Value::String(String::new()) }; f.searchable = false; }
@@ -248,7 +248,8 @@ impl Snapshot {
         }
         out.relations.retain(|r| r.privacy != "SECRET" && !secret_ids.contains(&r.source_id) && !secret_ids.contains(&r.target_id));
         out.events.retain(|ev| !secret_ids.contains(&ev.entity_id));
-        for r in &mut out.relations { if mask_private && r.privacy == "PRIVATE" { r.note = None; } }
+        for r in &mut out.relations { r.note = None; }
+        for ev in &mut out.events { ev.note = None; }
         if mask_private { out.events.clear(); }
         // IDs may contain personal names in imported data; replace them in shareable exports.
         let mut remap = HashMap::new();

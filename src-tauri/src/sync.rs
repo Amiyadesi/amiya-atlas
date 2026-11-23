@@ -130,6 +130,19 @@ pub fn initialize_server(vault:&mut VaultService)->Result<()> {
     if let Ok(url)=std::env::var("RELAKEEP_SELF_SYNC_URL") { let old=read(vault)?;if old.is_none()||old.as_ref().is_some_and(|s|s.config.kind=="server"&&s.config.url==url) { configure(vault,Config {kind:"server".into(),url,username:String::new(),password:std::env::var("RELAKEEP_ACCESS_TOKEN").map_err(|_|"服务器密钥缺失")?,automatic:true})?; } }
     Ok(())
 }
+pub fn cloud_connect(vault:&mut VaultService,id:&str)->Result<Value>{
+    if uuid::Uuid::parse_str(id).is_err(){return Err("服务器标识无效".into());}
+    let value=crate::cloud::account_request(vault,"/api/account/sync-ticket",Some(&serde_json::json!({"id":id})))?;
+    let origin=server_origin(value["url"].as_str().ok_or("服务器地址缺失")?)?;
+    let ticket=value["ticket"].as_str().filter(|v|v.len()<=4096).ok_or("连接授权缺失")?;
+    let response=client()?.post(format!("{origin}/api/sync/connect")).json(&serde_json::json!({"ticket":ticket,"name":"官网账户设备"})).send().map_err(|_|"个人服务器连接失败")?;
+    let ok=response.status().is_success();
+    let data:Value=serde_json::from_str(&body(response)?).map_err(|_|"个人服务器响应无效")?;
+    if !ok{return Err(data["message"].as_str().unwrap_or("个人服务器拒绝连接，请在服务器设置中重新关联官网账户").into());}
+    let token=data["token"].as_str().filter(|s|s.starts_with("rks_")&&s.len()<=200).ok_or("同步授权无效")?;
+    let status=configure(vault,Config{kind:"server".into(),url:format!("{origin}/api/sync"),username:String::new(),password:token.into(),automatic:true})?;
+    Ok(serde_json::to_value(status).map_err(|_|"同步状态编码失败")?)
+}
 
 fn merge(base:&Snapshot,local:&Snapshot,remote:&Snapshot,strategy:Option<&str>)->Result<(Snapshot,Vec<String>)>{
     let b=serde_json::to_value(portable(base)).map_err(|_|"同步基线编码失败")?;
@@ -165,6 +178,16 @@ fn merge(base:&Snapshot,local:&Snapshot,remote:&Snapshot,strategy:Option<&str>)-
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ledger_sync_unions_appends_and_keeps_unknown_records(){
+        let mut base=crate::ledger::tests::fixture();base.transactions.clear();
+        let mut local=crate::ledger::tests::fixture();let mut remote=local.clone();
+        remote.transactions[0].id="remote-tx".into();remote.transactions[0].idempotency_key="remote-key".into();
+        local.opaque_records.push(serde_json::json!({"kind":"FutureAllocation","data":{"id":"future","payload":"keep"}}));
+        let (merged,conflicts)=merge(&base,&local,&remote,None).unwrap();assert_eq!(merged.transactions.len(),2);assert_eq!(merged.opaque_records,local.opaque_records);assert!(conflicts.is_empty());
+        remote.transactions[0].idempotency_key="key-a".into();assert_eq!(merge(&base,&local,&remote,None).unwrap().0.transactions.len(),1);
+        remote.transactions[0]=local.transactions[0].clone();remote.transactions[0].note=Some("conflicting history".into());assert!(merge(&base,&local,&remote,Some("remote")).is_err());
+    }
     #[test]
     fn independent_additions_merge_and_same_item_conflicts(){
         let capture=|id:&str,text:&str|crate::capture::Capture{id:id.into(),raw_text:text.into(),input_type:"text".into(),timestamp:crate::domain::now(),status:"PENDING".into()};

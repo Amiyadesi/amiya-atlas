@@ -1,8 +1,37 @@
 import assert from "node:assert/strict";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { createServer } from "vite";
 const vite = await createServer({ server: { middlewareMode: true } });
 try {
+ if(process.argv.includes('--finance-guard')||process.argv.includes('--finance-model')){
+  const {localLedgerProposal,amountSupported,numberIssues}=await vite.ssrLoadModule('/src/domain/finance-capture.ts');
+  const {makeEntry}=await vite.ssrLoadModule('/src/domain/ledger.ts');
+  const {money}=await vite.ssrLoadModule('/src/domain/money.ts');
+  const {parseFinance}=await vite.ssrLoadModule('/src/ai/finance.ts');
+  const {DEFAULT_PROVIDER}=await vite.ssrLoadModule('/src/ai/provider.ts');
+  const accountRows=[['cash','现金','CNY'],['bank','银行卡','CNY'],['usd','美元账户','USD'],['btc','比特币账户','BTC'],['jpy','日元账户','JPY'],['hkd','港币账户','HKD'],['eur','欧元账户','EUR'],['twd','台币账户','TWD'],['eth','以太账户','ETH'],['gbp','英镑账户','GBP']];
+  const snapshot={revision:0,entities:[],relations:[],events:[],ledgerAccounts:[...accountRows.map(([id,name,asset])=>({id,name,asset,kind:'ASSET',privacy:'PRIVATE'})),{id:'expense',name:'其他支出',kind:'EXPENSE',privacy:'PRIVATE'},{id:'income',name:'其他收入',kind:'INCOME',privacy:'PRIVATE'}],transactions:[makeEntry({kind:'SPEND',amount:money('8','CNY'),accountId:'cash',counterId:'expense',date:'2026-10-15'})]};
+  const samples=JSON.parse(await readFile('fixtures/finance-evaluation.json','utf8')),report=[];
+  const modelMode=process.argv.includes('--finance-model');
+  for(const sample of samples){try{
+   const proposal=modelMode&&!sample.reverse?await parseFinance({...DEFAULT_PROVIDER,model:process.env.ATLAS_EVAL_MODEL||DEFAULT_PROVIDER.model},sample.text,snapshot,undefined,'2026-10-15T12:00:00Z'):localLedgerProposal(sample.text,snapshot,'2026-10-15');
+   assert.ok(proposal);
+   if(sample.pending)assert.ok(proposal.uncertainty.length>0||!proposal.financeActions?.length);
+   else {assert.equal(proposal.uncertainty.length,0);assert.equal(proposal.financeActions.length,sample.entries??1);
+    if(sample.reverse)assert.equal(proposal.financeActions[0].type,'ledger.reverse');
+    else {assert.equal(numberIssues(proposal.financeActions,sample.text).length,0);const t=proposal.financeActions[0].transaction;
+     if(sample.amount){assert.ok(amountSupported(money(sample.amount,sample.asset),sample.text));assert.equal(t.legs[0].money.asset,sample.asset);assert.equal(t.legs[0].money.amount.replace('-',''),money(sample.amount,sample.asset).amount);}
+     if(sample.source){assert.equal(t.legs[0].accountId,sample.source);assert.equal(t.legs[1].accountId,sample.target);}
+    }
+   }
+   report.push({text:sample.text,pass:true});
+  }catch(e){report.push({text:sample.text,pass:false,error:e.message});}}
+  assert.equal(amountSupported(money('80','CNY'),'八块'),false);
+  await mkdir('qa-artifacts',{recursive:true});await writeFile(`qa-artifacts/finance-${modelMode?'model':'guard'}.json`,JSON.stringify(report,null,2));
+  console.log(`${report.filter(r=>r.pass).length}/${report.length} finance ${modelMode?'model':'offline guard'} cases passed`);
+  for(const failed of report.filter(r=>!r.pass))console.error(failed);
+  if(report.some(r=>!r.pass))process.exitCode=1;
+ } else {
   const { createProvider, DEFAULT_PROVIDER, chatTransport } =
     await vite.ssrLoadModule("/src/ai/provider.ts");
   const { matchEntities } = await vite.ssrLoadModule("/src/domain/proposal.ts");
@@ -408,6 +437,7 @@ try {
     JSON.stringify({ model, threads, format, warm: true, report }, null, 2),
   );
   if (report.some((r) => !r.pass)) process.exitCode = 1;
+ }
 } finally {
   await vite.close();
 }

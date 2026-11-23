@@ -27,7 +27,7 @@ pub struct DeviceFlow { pub code:String, pub expires_at:i64 }
 impl Drop for DeviceFlow { fn drop(&mut self) { self.code.zeroize(); } }
 
 pub fn request(path:&str, body:Option<&Value>, token:Option<&str>)->Result<Value> {
-    if !["/api/auth/device/code","/api/auth/device/token","/api/auth/get-session","/api/auth/sign-out","/api/account/balance","/api/account/ai","/api/account/checkout","/api/account/portal","/api/features"].contains(&path) { return Err("云接口无效".into()); }
+    if !["/api/auth/device/code","/api/auth/device/token","/api/auth/get-session","/api/auth/sign-out","/api/account/balance","/api/account/model","/api/account/servers","/api/account/servers/remove","/api/account/sync-ticket","/api/account/ai","/api/account/checkout","/api/account/portal","/api/features"].contains(&path) { return Err("云接口无效".into()); }
     let client=Client::builder().connect_timeout(Duration::from_secs(10)).timeout(Duration::from_secs(if path=="/api/account/ai"{140}else{30})).redirect(reqwest::redirect::Policy::none()).build().map_err(|_|"无法建立云连接")?;
     let url=format!("{ORIGIN}{path}");
     let mut req=if let Some(value)=body {
@@ -45,6 +45,38 @@ pub fn request(path:&str, body:Option<&Value>, token:Option<&str>)->Result<Value
         return Err(value["message"].as_str().or(value["error_description"].as_str()).unwrap_or("云请求失败，请登录或稍后重试").chars().take(500).collect());
     }
     Ok(value)
+}
+pub fn account_request(vault:&mut crate::vault::VaultService,path:&str,body:Option<&Value>)->Result<Value>{
+    if !["/api/account/balance","/api/account/model","/api/account/servers","/api/account/servers/remove","/api/account/sync-ticket","/api/account/ai","/api/account/checkout","/api/account/portal","/api/features"].contains(&path){return Err("云接口无效".into());}
+    vault.touch()?;
+    let session=vault.load()?.cloud_session;
+    if path!="/api/features" && !session.as_ref().is_some_and(|s|s.expires_at>chrono::Utc::now().timestamp_millis()){return Err("请先在设置中登录官网账户".into());}
+    let result=request(path,body,session.as_ref().map(|s|s.token.as_str()))?;
+    vault.touch()?;
+    Ok(result)
+}
+pub fn device_start(vault:&mut crate::vault::VaultService)->Result<Value>{
+    vault.touch()?;
+    let value=request("/api/auth/device/code",Some(&json!({"client_id":"relakeep-desktop"})),None)?;
+    let code=value["device_code"].as_str().filter(|s|!s.is_empty()&&s.len()<=500).ok_or("设备码无效")?.to_string();
+    let user=value["user_code"].as_str().filter(|s|!s.is_empty()&&s.len()<=16&&s.chars().all(|c|c.is_ascii_alphanumeric()||c=='-')).ok_or("设备显示码无效")?;
+    let expires=value["expires_in"].as_i64().filter(|v|*v>0&&*v<=900).ok_or("设备有效期无效")?;
+    vault.cloud_device=Some(DeviceFlow{code,expires_at:chrono::Utc::now().timestamp_millis()+expires*1000});
+    Ok(json!({"userCode":user,"verificationUrl":format!("{ORIGIN}/device?user_code={user}"),"expiresIn":expires,"interval":5}))
+}
+pub fn device_poll(vault:&mut crate::vault::VaultService)->Result<Value>{
+    vault.touch()?;
+    let flow=vault.cloud_device.as_ref().ok_or("请先发起登录")?;
+    if flow.expires_at<=chrono::Utc::now().timestamp_millis(){return Err("设备码已过期，请重新登录".into());}
+    let response=request("/api/auth/device/token",Some(&json!({"client_id":"relakeep-desktop","device_code":flow.code,"grant_type":"urn:ietf:params:oauth:grant-type:device_code"})),None)?;
+    if response["pending"]==true{return Ok(response);}
+    let token=response["access_token"].as_str().ok_or("云会话缺失")?.to_string();
+    let seconds=response["expires_in"].as_i64().filter(|v|*v>0&&*v<=60*60*24*31).ok_or("云会话有效期无效")?;
+    let info=request("/api/auth/get-session",None,Some(&token))?;
+    let email=info["user"]["email"].as_str().ok_or("云账户缺失")?.to_string();
+    vault.set_cloud_session(Some(CloudSession{token,email,expires_at:chrono::Utc::now().timestamp_millis()+seconds*1000}))?;
+    vault.cloud_device=None;
+    Ok(json!({"connected":true}))
 }
 pub fn open_page(path:&str)->Result<()> {
     if !["/login","/pricing","/account","/guide","/privacy","/refunds"].contains(&path) {return Err("官网页面无效".into());}

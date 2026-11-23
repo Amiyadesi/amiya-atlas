@@ -1718,11 +1718,11 @@ progress {
   .app-shell { display:block; }
   .sidebar { position:fixed; inset:auto 0 0; height:auto; width:100%; z-index:20; padding:0 8px env(safe-area-inset-bottom); border:0; border-top:1px solid var(--border); background:var(--surface); }
   .sidebar .brand,.sidebar-bottom { display:none; }
-  .sidebar nav { display:grid; grid-template-columns:repeat(5,1fr); gap:0; padding:3px 0; margin:0; }
+  .sidebar nav { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:0; padding:3px 0; margin:0; }
   .sidebar nav button { display:flex; flex-direction:column; gap:1px; padding:7px 4px; min-height:54px; border-radius:7px; position:relative; }
   .sidebar nav button > span:not(.nav-symbol):not(.count) { display:block; font-size:11px; }
   .sidebar nav .count { position:absolute; top:1px; right:19%; font-size:10px; min-width:15px; padding:0 3px; }
-  .main-area { margin:0; padding-bottom:calc(75px + env(safe-area-inset-bottom)); }
+  .main-area { margin:0; width:100%; padding-bottom:calc(75px + env(safe-area-inset-bottom)); }
   .page-content { padding:22px 16px; }
   .home-workbench,.home-agenda,.memory-workspace,.memory-columns,.detail-columns { display:block; }
   .home-agenda { margin-top:25px; }

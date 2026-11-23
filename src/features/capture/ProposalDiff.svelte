@@ -44,7 +44,7 @@
           MANAGED_BY: "由此管理",
           MANAGES: "管理",
           OWNS: "持有",
-          ISSUED_BY: "发行方",
+          ISSUED_BY: "提供方",
           HOSTED_ON: "托管于",
           DEPENDS_ON: "依赖",
           SOURCE_IN: "源码位于",

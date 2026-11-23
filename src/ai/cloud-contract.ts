@@ -5,7 +5,17 @@ const id = z.string().min(1).max(100);
 export const cloudInputSchema = z.strictObject({
   requestId: z.string().regex(/^[a-zA-Z0-9_-]{16,100}$/),
   kind: z.enum(["capture", "query", "ledger", "ledger-query"]),
-  ledgerAccounts: z.array(z.strictObject({id,name:z.string().min(1).max(200),kind:z.enum(['ASSET','LIABILITY','INCOME','EXPENSE','EQUITY']),asset:z.string().max(12).optional()})).max(40).optional(),
+  ledgerAccounts: z
+    .array(
+      z.strictObject({
+        id,
+        name: z.string().min(1).max(200),
+        kind: z.enum(["ASSET", "LIABILITY", "INCOME", "EXPENSE", "EQUITY"]),
+        asset: z.string().max(12).optional(),
+      }),
+    )
+    .max(1000)
+    .optional(),
   text: z.string().trim().min(1).max(10000),
   now: z.iso.datetime(),
   entities: z
@@ -64,7 +74,10 @@ export function cloudSnapshot(input: CloudInput): VaultSnapshot {
     throw new Error("Cloud context has invalid references");
   return {
     revision: 0,
-    ledgerAccounts:input.ledgerAccounts?.map(a=>({...a,privacy:'PRIVATE'})),
+    ledgerAccounts: input.ledgerAccounts?.map((a) => ({
+      ...a,
+      privacy: "PRIVATE",
+    })),
     entities: input.entities.map((e) => ({
       id: e.id,
       name: e.name,

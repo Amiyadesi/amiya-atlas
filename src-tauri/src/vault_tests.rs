@@ -6,6 +6,22 @@ use crate::{
 mod tests {
     use super::*;
     use std::fs;
+    #[test]
+    fn ledger_migration_backup_restore_and_unknown_preservation() {
+        let dir=tempfile::tempdir().unwrap();let path=dir.path().join("synthetic.sqlite");let mut vault=VaultService::new(path.clone());
+        let password="synthetic migration password";vault.initialize(password).unwrap();
+        let mut old=vault.load().unwrap();let mut e=entity("legacy","Synthetic legacy service","PRIVATE");e.fields.push(domain::Field{id:"legacy-cost".into(),entity_id:e.id.clone(),key:"cost".into(),value_type:"text".into(),value:serde_json::json!("30 USD / month"),privacy:"PRIVATE".into(),searchable:false,source_of_truth:None});old.entities.push(e);
+        let old=vault.save(old,&[]).unwrap();let before=vault.backup().unwrap();
+        let mut next=old.clone();let finance=crate::ledger::tests::fixture();next.ledger_accounts=finance.ledger_accounts;next.transactions=finance.transactions;next.opaque_records.push(serde_json::json!({"kind":"FutureAllocation","data":{"id":"future","payload":"keep"}}));
+        let saved=vault.save(next,&[]).unwrap();let after=vault.backup().unwrap();assert!(!after.contains("Synthetic legacy service"));assert!(!after.contains("synthetic cash"));
+        let raw=fs::read(&path).unwrap();assert!(!raw.windows(14).any(|v|v==b"synthetic cash"));
+        let mut old_style=saved.clone();old_style.opaque_records.clear();assert_eq!(vault.save(old_style,&[]).unwrap().opaque_records,saved.opaque_records);
+        vault.lock();let reopened=vault.unlock(password).unwrap();assert_eq!(reopened.transactions.len(),1);assert_eq!(reopened.entities[0].fields[0].value,"30 USD / month");
+        let restored=vault.restore(&before,password).unwrap();assert!(restored.transactions.is_empty());assert_eq!(restored.entities.len(),1);
+        let restored=vault.restore(&after,password).unwrap();assert_eq!(restored.transactions.len(),1);assert_eq!(restored.opaque_records,saved.opaque_records);
+        let mut broken:serde_json::Value=serde_json::from_str(&after).unwrap();broken["records"][0]["ciphertext"][0]=serde_json::json!(999);assert!(vault.restore(&broken.to_string(),password).is_err());
+        assert_eq!(vault.load().unwrap().transactions.len(),1);
+    }
 
     #[cfg(windows)]
     #[test]

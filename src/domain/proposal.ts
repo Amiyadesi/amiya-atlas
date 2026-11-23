@@ -24,6 +24,7 @@ export const ENTITY_TYPES = [
   "Domain",
   "Server",
   "Service",
+  "Provider",
   "Project",
   "Repository",
   "Client",
@@ -31,6 +32,7 @@ export const ENTITY_TYPES = [
 ] as const;
 export function attributeLabel(key: string): string {
   const labels: Record<string, string> = {
+    commercial: "商业经营",
     fee: '费用', billing_period: '计费周期', avoidable_project: '停用此项目可取消', quote: '报价', delivery: '交付日期', project: '项目', contact: '联系方式',
     region: "地区",
     country: "国家 / 地区",

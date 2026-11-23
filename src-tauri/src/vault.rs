@@ -38,6 +38,7 @@ impl Drop for DeviceKey { fn drop(&mut self) { self.key.zeroize(); } }
 
 pub struct VaultService {
     pub path: PathBuf,
+    pub cloud_device: Option<crate::cloud::DeviceFlow>,
     key: Option<Zeroizing<[u8; 32]>>,
     meta: Option<VaultMeta>,
     last_activity: Instant,
@@ -45,7 +46,7 @@ pub struct VaultService {
 }
 
 impl VaultService {
-    pub fn new(path: PathBuf) -> Self { Self { path, key: None, meta: None, last_activity: Instant::now(), idle_timeout: None } }
+    pub fn new(path: PathBuf) -> Self { Self { path, cloud_device: None, key: None, meta: None, last_activity: Instant::now(), idle_timeout: None } }
     fn store(&self) -> Result<SqliteRecordStore> { SqliteRecordStore::open(&self.path) }
     pub fn exists(&self) -> bool { self.path.exists() }
     pub fn seal_local(&self, name: &str, value: &[u8]) -> Result<()> {
@@ -260,6 +261,7 @@ impl VaultService {
         let key = unlock_key(&backup.meta, password)?;
         let snapshot = decode_snapshot(&key, &backup.meta, &backup.records)?;
         self.forget_device()?;
+        self.cloud_device=None;
         self.clear_sync()?;
         let policy = self.path.with_extension("lock-policy");
         if policy.exists() { std::fs::remove_file(policy).map_err(|_| "无法重置锁定设置")?; }

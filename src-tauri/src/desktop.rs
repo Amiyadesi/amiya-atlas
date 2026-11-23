@@ -49,6 +49,7 @@ struct Status {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ImportPreview {
+    transaction_count: usize,
     entity_count: usize,
     relation_count: usize,
     event_count: usize,
@@ -214,6 +215,7 @@ fn preview_atlas_json(text: String, state: State<'_, AppState>) -> Result<Import
         })
         .collect();
     Ok(ImportPreview {
+        transaction_count: imported.transactions.len(),
         entity_count: imported.entities.len(),
         relation_count: imported.relations.len(),
         event_count: imported.events.len(),
@@ -696,9 +698,10 @@ struct WebState(Mutex<Option<crate::http::WebHandle>>);
 async fn save_export_file(filename:String,payload:String,app:tauri::AppHandle)->Result<bool>{
     use tauri_plugin_dialog::DialogExt;
     use tauri_plugin_fs::{FsExt,OpenOptions};
-    if payload.len()>128*1024*1024||!filename.ends_with(".json")||filename.contains(['/', '\\']){return Err("导出文件无效".into());}
+    if payload.len()>128*1024*1024||!(filename.ends_with(".json")||filename.ends_with(".csv"))||filename.contains(['/', '\\']){return Err("导出文件无效".into());}
     tauri::async_runtime::spawn_blocking(move||{
-        let Some(path)=app.dialog().file().set_file_name(filename).add_filter("JSON",&["json"]).blocking_save_file() else{return Ok(false);};
+        let extension=if filename.ends_with(".csv"){ "csv" }else{ "json" };
+        let Some(path)=app.dialog().file().set_file_name(filename).add_filter(extension,&[extension]).blocking_save_file() else{return Ok(false);};
         let mut file=app.fs().open(path,OpenOptions::new().write(true).create(true).truncate(true).clone()).map_err(|_|"无法写入所选文件")?;
         use std::io::Write;file.write_all(payload.as_bytes()).map_err(|_|"导出写入失败")?;file.sync_all().map_err(|_|"导出保存失败")?;Ok(true)
     }).await.map_err(|_|"导出中断")?
@@ -770,7 +773,7 @@ async fn cloud_logout(state: State<'_, AppState>) -> Result<()> {
 }
 #[tauri::command]
 async fn cloud_request(path:String,body:Option<serde_json::Value>,state:State<'_,AppState>)->Result<serde_json::Value> {
-    if !["/api/account/balance","/api/account/ai","/api/account/checkout","/api/account/portal","/api/features"].contains(&path.as_str()) {return Err("云接口无效".into());}
+    if !["/api/account/balance","/api/account/model","/api/account/servers","/api/account/servers/remove","/api/account/sync-ticket","/api/account/ai","/api/account/checkout","/api/account/portal","/api/features"].contains(&path.as_str()) {return Err("云接口无效".into());}
     let session={let mut vault=state.vault.lock().map_err(|_|"Vault 状态不可用")?;vault.touch()?;vault.load()?.cloud_session};
     if path!="/api/features" && !session.as_ref().is_some_and(|s|s.expires_at>chrono::Utc::now().timestamp_millis()){return Err("请先在设置中登录官网云账户".into());}
     let vault=state.vault.clone();
@@ -787,6 +790,11 @@ fn cloud_open(path:String,app:tauri::AppHandle)->Result<()> {
 }
 #[tauri::command]
 fn cloud_open_payment(url:String)->Result<()> {cloud::open_payment(&url)}
+#[tauri::command]
+async fn sync_cloud_connect(id:String,state:State<'_,AppState>)->Result<serde_json::Value>{
+    let vault=state.vault.clone();
+    tauri::async_runtime::spawn_blocking(move||{let mut guard=vault.lock().map_err(|_|"Vault 状态不可用")?;sync::cloud_connect(&mut guard,&id)}).await.map_err(|_|"同步连接中断")?
+}
 
 #[cfg_attr(target_os="android",tauri::mobile_entry_point)]
 pub fn run() {
@@ -866,7 +874,7 @@ pub fn run() {
             cloud_request,
             cloud_open,
             cloud_open_payment
-            ,sync_status,sync_configure,sync_run,sync_adopt,sync_disconnect,sync_server_start,sync_server_poll,web_open,save_export_file,read_import_file
+            ,sync_status,sync_configure,sync_run,sync_adopt,sync_disconnect,sync_server_start,sync_server_poll,sync_cloud_connect,web_open,save_export_file,read_import_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running Relakeep");

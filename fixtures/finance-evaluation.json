@@ -1,0 +1,52 @@
+[
+  { "text": "现金付了八块", "amount": "8", "asset": "CNY" },
+  { "text": "现金付了十三元", "amount": "13", "asset": "CNY" },
+  { "text": "现金支出十元", "amount": "10", "asset": "CNY" },
+  { "text": "现金支付一百零二元", "amount": "102", "asset": "CNY" },
+  { "text": "现金付了两千元", "amount": "2000", "asset": "CNY" },
+  { "text": "现金支付三万五千元", "amount": "35000", "asset": "CNY" },
+  { "text": "现金付了一万零八元", "amount": "10008", "asset": "CNY" },
+  { "text": "现金付了零点一元", "amount": "0.1", "asset": "CNY" },
+  { "text": "现金付了十三点五元", "amount": "13.5", "asset": "CNY" },
+  { "text": "现金支出一百二十三点四五元", "amount": "123.45", "asset": "CNY" },
+  { "text": "美元账户支付1.2k 美元", "amount": "1200", "asset": "USD" },
+  { "text": "美元账户收到2m USD", "amount": "2000000", "asset": "USD" },
+  { "text": "现金支付1.5万人民币", "amount": "15000", "asset": "CNY" },
+  {
+    "text": "比特币账户支付0.00000001 BTC",
+    "amount": "0.00000001",
+    "asset": "BTC"
+  },
+  {
+    "text": "比特币账户收到0.00061700 BTC",
+    "amount": "0.000617",
+    "asset": "BTC"
+  },
+  { "text": "日元账户支付100 日元", "amount": "100", "asset": "JPY" },
+  { "text": "美元账户付了30 USD", "amount": "30", "asset": "USD" },
+  { "text": "港币账户支出23.50 HKD", "amount": "23.5", "asset": "HKD" },
+  { "text": "美元账户支付2.99美元", "amount": "2.99", "asset": "USD" },
+  { "text": "现金支付1,234.56 CNY", "amount": "1234.56", "asset": "CNY" },
+  { "text": "现金支付0.01 CNY", "amount": "0.01", "asset": "CNY" },
+  { "text": "现金支付０.５元", "amount": "0.5", "asset": "CNY" },
+  { "text": "欧元账户支付99欧元", "amount": "99", "asset": "EUR" },
+  { "text": "港币账户支付八十八港元", "amount": "88", "asset": "HKD" },
+  { "text": "日元账户支付七千日元", "amount": "7000", "asset": "JPY" },
+  { "text": "台币账户支付三百台币", "amount": "300", "asset": "TWD" },
+  {
+    "text": "以太账户支付0.000000000000000001 ETH",
+    "amount": "0.000000000000000001",
+    "asset": "ETH"
+  },
+  { "text": "英镑账户支付10.00 GBP", "amount": "10", "asset": "GBP" },
+  { "text": "现金支付四千五百六十七元", "amount": "4567", "asset": "CNY" },
+  { "text": "现金支付五十元", "amount": "50", "asset": "CNY" },
+  { "text": "现金收到一亿人民币", "amount": "100000000", "asset": "CNY" },
+  { "text": "现金还没付八块", "pending": true },
+  { "text": "现金付了八块左右", "pending": true },
+  { "text": "准备现金支付100元", "pending": true },
+  { "text": "现金付了八块和九块", "pending": true },
+  { "text": "现金付了八块；现金付了九块", "entries": 2 },
+  { "text": "银行卡转账100元到现金", "source": "bank", "target": "cash" },
+  { "text": "撤销刚才那笔", "reverse": true }
+]

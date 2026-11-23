@@ -1,7 +1,7 @@
 services:
   relakeep:
     build: .
-    image: relakeep:selfhost-0.4.1
+    image: relakeep:selfhost-0.9.2
     restart: unless-stopped
     env_file: selfhost.env
     ports:

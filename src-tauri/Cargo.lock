@@ -44,7 +44,7 @@ dependencies = [
 
 [[package]]
 name = "amiya-atlas"
-version = "0.4.1"
+version = "0.9.3"
 dependencies = [
  "argon2",
  "base64 0.22.1",
