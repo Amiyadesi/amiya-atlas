@@ -11,6 +11,8 @@
   import Icon from "../../lib/Icon.svelte";
   export let snapshot: VaultSnapshot;
   export let commands: Command[];
+  export let pages: Command[];
+  export let checkUpdate: () => Promise<void>;
   export let openEntity: (id: string) => void;
   export let explore: (id: string) => void;
   export let account: (id: string) => void;
@@ -22,6 +24,8 @@
   let dialog: HTMLDialogElement, input: HTMLInputElement;
   $: catalog = [
     ...commands,
+    { label: "检查应用更新", group: "操作", detail: "应用更新", keywords: "update 版本 下载", run: checkUpdate },
+    ...pages,
     ...vaultCommands(snapshot, openEntity, explore, account),
   ];
   $: quick = quickPreview(query, snapshot);

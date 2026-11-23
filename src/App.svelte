@@ -9,6 +9,8 @@
   import { cancelDialogs, confirmDialog, promptDialog } from "./lib/dialog";
   import DialogHost from "./lib/DialogHost.svelte";
   import CommandPalette from "./features/command/CommandPalette.svelte";
+  import UpdateSettings from "./features/update/UpdateSettings.svelte";
+  import { getUpdatePrefs, saveUpdatePrefs, checkForUpdate, openUpdateDownload, type UpdatePrefs, type UpdateCheckResult } from "./lib/updater";
   import type { Command } from "./features/command/search";
   import { initTheme, themePreference, resolvedTheme, themeNames, setTheme, cycleTheme, type Preference } from "./lib/theme";
   import { categoryColors } from "./features/graph/layout";
@@ -104,6 +106,51 @@
   let syncError = "";
   let snapshot: VaultSnapshot = emptySnapshot();
   let page: Page = "Home";
+  let updatePrefs = getUpdatePrefs(), updateInfo: UpdateCheckResult | null = null;
+  let checkingUpdate = false, updateError = "", updateRequest = 0, showUpdateErrors = false;
+  let startupChecked = false;
+  $: if (mode === "ready" && !startupChecked) {
+    startupChecked = true;
+    const age = Date.now() - updatePrefs.lastCheckedAt;
+    if (updatePrefs.autoCheck && (age > 6 * 60 * 60 * 1000 || age < 0)) void checkUpdate(true);
+  }
+  function changeUpdatePrefs(change: Partial<UpdatePrefs>) {
+    if ((change.source !== undefined && change.source !== updatePrefs.source) ||
+        (change.customMirror !== undefined && change.customMirror !== updatePrefs.customMirror)) {
+      updateRequest++;
+      updateInfo = null; updateError = ""; checkingUpdate = false;
+    }
+    updatePrefs = {...updatePrefs, ...change};
+    try { saveUpdatePrefs(updatePrefs); }
+    catch { if (!("lastCheckedAt" in change)) flash("偏好仅在本次使用中生效"); }
+  }
+  async function checkUpdate(silent = false) {
+    if (!silent) showUpdateErrors = true;
+    if (checkingUpdate) return;
+    const request = ++updateRequest;
+    checkingUpdate = true; showUpdateErrors = !silent; updateError = ""; updateInfo = null;
+    try {
+      const info = await checkForUpdate(updatePrefs);
+      if (request === updateRequest) updateInfo = info;
+    } catch (e) {
+      if (request === updateRequest && showUpdateErrors) updateError = readable(e);
+    } finally {
+      if (request === updateRequest) {
+        checkingUpdate = false;
+        changeUpdatePrefs({lastCheckedAt: Date.now()});
+      }
+    }
+  }
+  async function updateDetails(check = false) {
+    navigate("Settings");
+    await tick();
+    const panel = document.getElementById("app-update");
+    panel?.focus({preventScroll: true}); panel?.scrollIntoView({block: "start"});
+    if (check) void checkUpdate();
+  }
+  function openUpdate(url: string) {
+    void openUpdateDownload(url, updatePrefs.customMirror).catch(e => error = readable(e));
+  }
   const paletteShortcut = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘ K" : "Ctrl K";
   let paletteOpen = false, relationEditor = false;
   let ledgerPage: LedgerPage;
@@ -161,7 +208,7 @@
     {label:"导出加密备份", detail:isPersistent ? undefined : "需要持久记忆库", disabled:!isPersistent, run:backup},
     {label:"锁定记忆库", run:lock},
   ].map(c=>({...c, group:"操作"})) as Command[];
-  $: paletteCommands = [...commands, ...pages.map(p=>({label:labels[p], group:"页面", keywords:p, run:()=>navigate(p)}))];
+  const palettePages = pages.map(p=>({label:labels[p], group:"页面", keywords:p, run:()=>navigate(p)}));
   let graphMode="relation";
   const currentMonth=dateToday().slice(0,7);
   $: homeReport=periodReport(snapshot,`${currentMonth}-01`,`${currentMonth}-31`);
@@ -1256,8 +1303,8 @@
   </main>
 {:else}
   <div class="app-shell">
-    {#if paletteOpen}<CommandPalette {snapshot} commands={paletteCommands} {openEntity} {explore} account={ledgerCommand}
-      preview={stageFinance} close={() => paletteOpen = false} failed={e => error = readable(e)}/>{/if}
+    {#if paletteOpen}<CommandPalette {snapshot} {commands} pages={palettePages} {openEntity} {explore} account={ledgerCommand}
+      preview={stageFinance} checkUpdate={() => updateDetails(true)} close={() => paletteOpen = false} failed={e => error = readable(e)}/>{/if}
     <aside class="sidebar">
       <a
         class="brand"
@@ -1300,6 +1347,15 @@
         <button class="command-trigger" on:click={openPalette} aria-label="打开命令面板" disabled={busy || recording || voiceBusy}><Icon name="Search"/><span>搜索或执行操作</span><kbd>{paletteShortcut}</kbd></button>
       </header>
       <div class="page-content">
+        {#if updateInfo?.hasUpdate && updatePrefs.dismissedVersion !== updateInfo.latestVersion}
+          <aside class="update-banner" aria-label="新版本提示">
+            <strong>v{updateInfo.latestVersion} {updateInfo.filename ? "可更新" : "已发布"}</strong>
+            {#if updateInfo.mirrorUrl}<button on:click={() => openUpdate(updateInfo!.mirrorUrl!)}>国内镜像下载</button>{/if}
+            {#if updateInfo.githubUrl}<button on:click={() => openUpdate(updateInfo!.githubUrl!)}>GitHub 下载</button>{/if}
+            <button on:click={() => updateDetails()}>查看详情</button>
+            <button class="dismiss" on:click={() => changeUpdatePrefs({dismissedVersion: updateInfo!.latestVersion})}>忽略此版本</button>
+          </aside>
+        {/if}
         {#if quickUndo?.revision===snapshot.revision && !error}<div class="commit-feedback" role="status"><span>{notice||"已入账"}</span><button class="secondary" disabled={busy} on:click={undoQuick}>撤销入账</button></div>{/if}
         {#if lastUndo && !error && !notice}<div class="commit-feedback" role="status">
             <span>已保存</span><button
@@ -1637,6 +1693,8 @@
             <div class="preference-row"><strong>锁定 / 解锁</strong><kbd>Ctrl Shift L</kbd></div>{:else}<div class="section-heading"><h2>记忆库</h2></div><button class="secondary" on:click={lock}>锁定</button>{/if}
           </section>
           <section class="panel settings-panel"><div class="section-heading"><h2>账本</h2><button class="secondary" on:click={()=>navigate("Ledger")}>账户与分录设置</button></div></section>
+          <UpdateSettings prefs={updatePrefs} info={updateInfo} checking={checkingUpdate} error={updateError}
+            check={() => checkUpdate()} change={changeUpdatePrefs} open={openUpdate}/>
           {#if isPersistent}<section class="panel settings-panel"><label class="preference-row"><strong>自动锁定</strong><select bind:value={idleMinutes} on:change={saveLockPolicy}><option value={0}>不自动锁定</option><option value={5}>5 分钟</option><option value={15}>15 分钟</option><option value={30}>30 分钟</option><option value={60}>1 小时</option></select></label></section>{/if}
           {#if isPersistent}<SyncSettings bind:status={syncStatus} changed={refreshSnapshot} />{/if}
           {#if syncError}<p class="error" role="alert">{syncError}</p>{/if}
@@ -1892,3 +1950,10 @@
 {#if mode === "ready" && importTab}<ImportCenter {snapshot} tab={importTab} close={()=>importTab=null} save={saveLocal}/>{/if}
 {#if mode === "ready" && editorOpen}<ManualEditor {snapshot} initial={draftEntity} showRelations={relationEditor} entity={editedEntity} saved={recordSaved} close={() => editorOpen = false} />{/if}
 {#if mode === "ready" && connectionsOpen}<ConnectionReview {snapshot} saved={value=>{snapshot=value;connectionsOpen=false;flash("已补全关联");}} close={()=>connectionsOpen=false}/>{/if}
+
+<style>
+  .update-banner { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 14px; margin-bottom: 16px; padding: 9px 14px; border-radius: 8px; background: var(--accent-soft); color: var(--accent); font-size: 13px; }
+  .update-banner button { background: transparent; color: inherit; padding: 4px 0; font-size: inherit; }
+  .update-banner button:hover { text-decoration: underline; }
+  .update-banner .dismiss { margin-left: auto; color: var(--muted); }
+</style>

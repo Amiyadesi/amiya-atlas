@@ -1,0 +1,33 @@
+{
+    "version":  "0.9.4",
+    "releasedAt":  "2026-11-23",
+    "notes":  "现代效率风双主题视觉重构、Bitwarden/浏览器/微信支付宝本地导入中心、极速记账与流水抽屉、3D 关系图/金钱图谱增强、应用内双源更新检测。",
+    "assets":  {
+                   "android":  {
+                                   "version":  "0.9.4",
+                                   "filename":  "Relakeep_0.9.4_arm64.apk",
+                                   "mirrorUrl":  "https://atlas.sayori.org/downloads/Relakeep_0.9.4_arm64.apk",
+                                   "githubUrl":  "https://github.com/Amiyadesi/amiya-atlas/releases/download/v0.9.4/Relakeep_0.9.4_arm64.apk",
+                                   "sha256":  "6fc83971dd1421dc23e3881a5b1beef643783caa6750c802ff6d1026a35b0535",
+                                   "size":  22017075
+                               },
+                   "windows":  {
+                                   "version":  "0.9.3",
+                                   "filename":  "Relakeep_0.9.3_x64-setup.exe",
+                                   "mirrorUrl":  "https://atlas.sayori.org/downloads/Relakeep_0.9.3_x64-setup.exe",
+                                   "githubUrl":  "https://github.com/Amiyadesi/amiya-atlas/releases/download/v0.9.3/Relakeep_0.9.3_x64-setup.exe"
+                               },
+                   "linuxDeb":  {
+                                    "version":  "0.9.2",
+                                    "filename":  "Relakeep_0.9.2_amd64.deb",
+                                    "mirrorUrl":  "https://atlas.sayori.org/downloads/Relakeep_0.9.2_amd64.deb",
+                                    "githubUrl":  "https://github.com/Amiyadesi/amiya-atlas/releases/download/v0.9.2/Relakeep_0.9.2_amd64.deb"
+                                },
+                   "linuxWeb":  {
+                                    "version":  "0.9.3",
+                                    "filename":  "Relakeep_0.9.3_linux-web.tar.gz",
+                                    "mirrorUrl":  "https://atlas.sayori.org/downloads/Relakeep_0.9.3_linux-web.tar.gz",
+                                    "githubUrl":  "https://github.com/Amiyadesi/amiya-atlas/releases/download/v0.9.3/Relakeep_0.9.3_linux-web.tar.gz"
+                                }
+               }
+}

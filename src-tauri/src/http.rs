@@ -39,7 +39,7 @@ pub fn start(vault:Arc<Mutex<VaultService>>, bind:&str, token:String, origin:Str
             if let Some(bytes)=assets::asset(asset){
                 let mime=if asset.ends_with(".js"){"text/javascript"}else if asset.ends_with(".css"){"text/css"}else if asset.ends_with(".svg"){"image/svg+xml"}else if asset.ends_with(".html"){"text/html; charset=utf-8"}else{"application/octet-stream"};
                 let data=if asset=="index.html"{String::from_utf8_lossy(bytes).replacen("<html","<html data-relakeep-host",1).into_bytes()}else{bytes.to_vec()};
-                let _=req.respond(Response::from_data(data).with_header(header("Content-Type",mime)).with_header(header("Cache-Control","no-store")).with_header(header("Content-Security-Policy","default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://api.coinbase.com; object-src 'none'; frame-ancestors 'none'; base-uri 'none'")));
+                let _=req.respond(Response::from_data(data).with_header(header("Content-Type",mime)).with_header(header("Cache-Control","no-store")).with_header(header("Content-Security-Policy","default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://api.coinbase.com https://atlas.sayori.org/downloads/releases.json https://api.github.com/repos/Amiyadesi/amiya-atlas/releases/latest https://api.github.com/repos/Amiyadesi/amiya-atlas/releases; object-src 'none'; frame-ancestors 'none'; base-uri 'none'")));
             }else{let _=req.respond(Response::from_string("Not found").with_status_code(404));}
         }
     }).map_err(|_|"网页服务启动失败")?;

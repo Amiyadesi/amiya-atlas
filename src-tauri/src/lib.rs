@@ -15,6 +15,8 @@ mod quick_capture;
 mod quick_capture;
 mod store;
 mod sync;
+#[cfg(any(feature = "desktop", test))]
+mod updater;
 mod commands;
 #[cfg(all(feature = "web-host", not(target_os = "android")))]
 mod http;

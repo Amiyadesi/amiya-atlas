@@ -44,7 +44,7 @@ dependencies = [
 
 [[package]]
 name = "amiya-atlas"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -55,6 +55,7 @@ dependencies = [
  "rand 0.8.8",
  "reqwest 0.12.28",
  "rusqlite",
+ "semver",
  "serde",
  "serde_json",
  "sha2",

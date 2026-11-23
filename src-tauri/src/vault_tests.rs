@@ -171,12 +171,19 @@ mod tests {
             searchable: true,
             source_of_truth: None,
         });
+        let mut private_field = snapshot.entities[0].fields[0].clone();
+        private_field.id = "f2".into();
+        private_field.key = "username".into();
+        snapshot.entities[0].fields.push(private_field);
         let redacted = snapshot.redacted(true);
         assert_eq!(redacted.entities.len(), 1);
         assert!(redacted.relations.is_empty());
         assert!(redacted.events.is_empty());
         assert!(redacted.entities[0].name.starts_with("Asset "));
-        assert_eq!(redacted.entities[0].fields[0].value, "");
+        let fields = &redacted.entities[0].fields;
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].key, "username"); // Notes are omitted; other private text is masked.
+        assert_eq!(fields[0].value, "");
         assert!(!serde_json::to_string(&redacted).unwrap().contains("SECRET"));
     }
 

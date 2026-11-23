@@ -1,4 +1,4 @@
-use crate::{ai, capture, cloud, domain, quick_capture, vault, voice, sync};
+use crate::{ai, capture, cloud, domain, quick_capture, vault, voice, sync, updater};
 use domain::{AtlasFile, CaptureRequest, GraphService, Result, Snapshot};
 use serde::Serialize;
 use std::{
@@ -56,6 +56,19 @@ struct ImportPreview {
     duplicate_entity_count: usize,
     duplicate_relation_count: usize,
     duplicate_event_count: usize,
+}
+
+#[tauri::command]
+async fn check_app_update(source: Option<String>, custom_mirror: Option<String>) -> Result<updater::UpdateCheckResult> {
+    tauri::async_runtime::spawn_blocking(move || updater::check(source.as_deref().unwrap_or("auto"), custom_mirror.as_deref()))
+        .await.map_err(|_| "更新检查中断")?
+}
+
+#[tauri::command]
+fn open_update_url(url: String, custom_mirror: Option<String>, app: tauri::AppHandle) -> Result<()> {
+    use tauri_plugin_opener::OpenerExt;
+    let url = updater::allowed_url(&url, custom_mirror.as_deref())?;
+    app.opener().open_url(url.as_str(), None::<&str>).map_err(|_| "无法打开系统浏览器".into())
 }
 
 #[tauri::command]
@@ -830,6 +843,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            check_app_update,
+            open_update_url,
             vault_status,
             set_idle_minutes,
             initialize_vault,

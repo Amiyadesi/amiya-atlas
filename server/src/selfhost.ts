@@ -486,7 +486,7 @@ app.post("/api/invoke", async (c) => {
 app.use("*", async (c, next) => {
   c.header(
     "Content-Security-Policy",
-    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://api.coinbase.com; object-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://api.coinbase.com https://atlas.sayori.org/downloads/releases.json https://api.github.com/repos/Amiyadesi/amiya-atlas/releases/latest https://api.github.com/repos/Amiyadesi/amiya-atlas/releases; object-src 'none'; frame-ancestors 'none'; base-uri 'none'",
   );
   c.header("Referrer-Policy", "no-referrer");
   await next();
