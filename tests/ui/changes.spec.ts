@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { openAssetSheet } from "./sheet";
 const empty = () => ({
   entitiesToCreate: [] as unknown[],
   entitiesToUpdate: [] as unknown[],
@@ -12,7 +13,7 @@ test("a rejected stale deletion refreshes its diff and retries against new relat
 }) => {
   const text = "从 Atlas 删除 Saily。";
   let requests = 0;
-  await page.route("http://127.0.0.1:11435/api/chat", (route) => {
+  await page.route("**/api/chat", (route) => {
     requests++;
     return route.fulfill({
       contentType: "application/json",
@@ -28,7 +29,8 @@ test("a rejected stale deletion refreshes its diff and retries against new relat
     });
   });
   await page.goto("/");
-  await page.getByLabel("告诉 Atlas 一件事").fill(text);
+  await openAssetSheet(page);
+  await page.getByLabel("告诉络笺一件事").fill(text);
   await page.getByRole("button", { name: "整理预览" }).click();
   await expect(page.getByLabel("－ 删除记忆：Saily +1")).toBeVisible();
   await page.evaluate(async () => {
@@ -91,7 +93,7 @@ test("mixed changes disclose cascades, require confirmation, and undo can return
     entitiesToDelete: [{ id: "domain-sayori" }],
     eventsToDelete: [{ id: "event-3" }],
   };
-  await page.route("http://127.0.0.1:11435/api/chat", (route) =>
+  await page.route("**/api/chat", (route) =>
     route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({ message: { content: JSON.stringify(proposal) } }),
@@ -99,7 +101,8 @@ test("mixed changes disclose cascades, require confirmation, and undo can return
     }),
   );
   await page.goto("/");
-  await page.getByLabel("告诉 Atlas 一件事").fill(text);
+  await openAssetSheet(page);
+  await page.getByLabel("告诉络笺一件事").fill(text);
   await page.getByRole("button", { name: "整理预览" }).click();
   const diff = page.getByLabel("记忆变更预览");
   await expect(diff).toContainText("＋ 新增记忆");
@@ -126,6 +129,7 @@ test("mixed changes disclose cascades, require confirmation, and undo can return
     path: "qa-artifacts/change-diff.png",
     fullPage: true,
   });
+  await page.getByRole("button",{name:"标记待整理"}).click();
   await page.getByRole("button", { name: "确认保存" }).click();
   const committed = await page.evaluate(async () => {
     const path = "/src/lib/api.ts";
@@ -207,7 +211,7 @@ test("retiring a number displays the state diff and keeps its graph and original
       },
     ],
   };
-  await page.route("http://127.0.0.1:11435/api/chat", (route) =>
+  await page.route("**/api/chat", (route) =>
     route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({ message: { content: JSON.stringify(proposal) } }),
@@ -215,7 +219,8 @@ test("retiring a number displays the state diff and keeps its graph and original
     }),
   );
   await page.goto("/");
-  await page.getByLabel("告诉 Atlas 一件事").fill(text);
+  await openAssetSheet(page);
+  await page.getByLabel("告诉络笺一件事").fill(text);
   await page.getByRole("button", { name: "整理预览" }).click();
   const diff = page.getByLabel("记忆变更预览");
   await expect(diff).toContainText("使用中");
@@ -225,6 +230,7 @@ test("retiring a number displays the state diff and keeps its graph and original
     path: "qa-artifacts/retirement-diff.png",
     fullPage: true,
   });
+  await page.getByRole("button",{name:"标记待整理"}).click();
   await page.getByRole("button", { name: "确认保存" }).click();
   const saved = await page.evaluate(async () => {
     const path = "/src/lib/api.ts";

@@ -315,7 +315,7 @@
   {#if data.page === "home"}
     <section class="hero wrap">
       <div class="hero-copy">
-        <div class="release-line"><a href={href("download")}>v0.9.4</a><span>{t("本地加密工作区", "Local-first workspace")}</span></div>
+        <div class="release-line"><a href={href("download")}>v0.9.5</a><span>{t("本地加密工作区", "Local-first workspace")}</span></div>
         <h1>{t("资产有来路，", "Follow the links.")}<br />{t("花销有去处。", "Track the costs.")}</h1>
         <p class="lead">{t("哪个账号在续费？钱从哪张卡出，又花在哪个项目上？络笺把数字资产和复式账本放进同一个本地加密库。", "Which account renews? Which card pays? Which project picks up the bill? Keep your digital assets and double-entry books together in one encrypted local vault.")}</p>
         <div class="actions">
@@ -459,7 +459,7 @@
       >
     </section>
     <section class="wrap platform-downloads">
-      <div><span><strong>Android</strong><small>0.9.4 · Android 7+ · arm64</small></span><a class="text-link" href="/downloads/Relakeep_0.9.4_arm64.apk">{t("下载 APK", "Download APK")} ↓</a></div>
+      <div><span><strong>Android</strong><small>0.9.5 · Android 7+ · arm64</small></span><a class="text-link" href="/downloads/Relakeep_0.9.5_arm64.apk">{t("下载 APK", "Download APK")} ↓</a></div>
       <div><span><strong>Debian / Ubuntu</strong><small>0.9.2 · amd64</small></span><a class="text-link" href="/downloads/Relakeep_0.9.2_amd64.deb">{t("下载 deb", "Download deb")} ↓</a></div>
       <div><span><strong>{t("Linux 网页版", "Linux web app")}</strong><small>0.9.3 · x64 · localhost:5011</small></span><a class="text-link" href="/downloads/Relakeep_0.9.3_linux-web.tar.gz">{t("下载程序", "Download app")} ↓</a></div>
       <div><span><strong>Docker</strong><small>0.9.2 · {t("首次部署到自己的服务器", "First install on your own server")}</small></span><a class="text-link" href="/downloads/Relakeep_0.9.2_selfhost.tar.gz">{t("下载部署包", "Download package")} ↓</a></div>

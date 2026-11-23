@@ -1,4 +1,6 @@
 <script lang="ts">
+  import type {Snippet} from "svelte";
+  export let graphSwitcher:Snippet|undefined=undefined;
   import type { Entity, VaultSnapshot } from "../../lib/types";
   import {
     isCommercialProject,
@@ -23,7 +25,10 @@
   export let onOpen: (id: string) => void;
   export let onConnect: ((entity: Entity) => void) | undefined = undefined;
   export let onFavorite: ((entity: Entity) => void) | undefined = undefined;
-  let flowHover = "";
+  let flowHover = "", flowWidth=900;
+  $: compact=flowWidth<580;
+  $: viewWidth=compact?360:900;
+  $: columns=[16,Math.round(viewWidth*.46),viewWidth-30];
   const flowId = "flow-" + crypto.randomUUID();
   let asset = "CNY",
     selected = rootId;
@@ -89,7 +94,7 @@
         ? "var(--expense)"
         : "var(--accent)";
   }
-  $: flows = buildFlows(visible, month, asset);
+  $: flows = buildFlows(visible, month, asset, columns, compact);
   $: hoveredNode = flows.nodes.find((n) => n.id === flowHover);
   $: hoveredPath = flows.paths.find((p) => p.key === flowHover);
   $: connected = trace(flows.paths, flowHover);
@@ -140,7 +145,7 @@
     );
     return { ...snapshot, relations: [...snapshot.relations, ...edges] };
   }
-  function buildFlows(s: VaultSnapshot, month: string, asset: string) {
+  function buildFlows(s: VaultSnapshot, month: string, asset: string, columns:number[], compact:boolean) {
     const accounts = new Map(s.ledgerAccounts?.map((a) => [a.id, a]));
     const names = new Map(
       s.entities
@@ -204,7 +209,7 @@
     const nodes = ids.map((id) => ({
       id,
       label: labels.get(id) ?? id,
-      x: id.startsWith("i:") ? 60 : id.startsWith("p:") ? 440 : 820,
+      x: columns[id.startsWith("i:") ? 0 : id.startsWith("p:") ? 1 : 2],
       y: 0,
       height: 0,
       incoming: 0n,
@@ -223,14 +228,14 @@
       node.outgoing = outgoing;
       totals.set(node.id, incoming > outgoing ? incoming : outgoing);
     }
-    for (const x of [60, 440, 820]) {
+    for (const x of columns) {
       const sum = nodes
         .filter((n) => n.x === x)
         .reduce((v, n) => v + (totals.get(n.id) ?? 0n), 0n);
       if (sum > maxTotal) maxTotal = sum;
     }
-    const factor = (n: bigint) => Number((n * 30000n) / maxTotal) / 100;
-    for (const x of [60, 440, 820]) {
+    const factor = (n: bigint) => Number((n * (compact?14000n:24000n)) / maxTotal) / 100;
+    for (const x of columns) {
       let y = 40;
       for (const node of nodes.filter((n) => n.x === x)) {
         node.y = y;
@@ -256,25 +261,26 @@
           key: l.from + "\\0" + l.to,
           label: a.label + " → " + b.label,
           h,
-          d: `M ${a.x + 14} ${ay} C ${a.x + 180} ${ay}, ${b.x - 180} ${by}, ${b.x} ${by}`,
+          d: `M ${a.x + 12} ${ay} C ${(a.x+b.x)/2} ${ay}, ${(a.x+b.x)/2} ${by}, ${b.x} ${by}`,
         },
       ];
     });
     return {
       nodes,
       paths,
-      height: Math.max(420, ...nodes.map((n) => n.y + n.height + 40)),
+      height: Math.max(compact?200:300, ...nodes.map((n) => n.y + n.height + 40)),
     };
   }
 </script>
 
+{#snippet selectors(graphControls:boolean)}
 <div class="money-toolbar">
   <label
     >币种<select bind:value={asset}
       >{#each ASSETS as a}<option value={a.code}>{a.code}</option
         >{/each}</select
     ></label
-  >{#if mode === "graph"}<label
+  >{#if graphControls}<label
       >聚焦资产<select bind:value={rootId}
         ><option value="">全部资产</option
         >{#each snapshot.entities.filter((e) => e.privacy !== "SECRET") as e}<option
@@ -283,6 +289,8 @@
       ></label
     >{/if}
 </div>
+{/snippet}
+{#if mode==="flow"}<div class="flow-heading"><h3>资金流向</h3>{@render selectors(false)}</div>{/if}
 {#if mode === "graph"}
   <ExploreCanvas
     snapshot={graph}
@@ -295,7 +303,7 @@
       selected = id;
       rootId = id;
     }}
-  />
+  >{@render graphSwitcher?.()}<div slot="filters">{@render selectors(true)}</div></ExploreCanvas>
   {#if selected}<aside class="money-detail">
       <div class="section-heading">
         <h3>{snapshot.entities.find((e) => e.id === selected)?.name}</h3>
@@ -331,29 +339,29 @@
         </div>{:else}<p class="muted">本月没有关联流水</p>{/each}
     </aside>{/if}
 {:else}
-  <!-- svelte-ignore a11y_no_noninteractive_tabindex (Scrollable region needs keyboard focus.) -->
+  {#if flows.nodes.length}
   <div
     class="flow"
     role="region"
     aria-label={`${month} ${asset} 钱流图`}
-    tabindex="0"
+    bind:clientWidth={flowWidth}
   >
     <svg
-      viewBox={`0 0 1040 ${flows.height}`}
+      viewBox={`0 0 ${viewWidth} ${flows.height}`}
       role="group"
       aria-label="收入、项目与成本流向"
     >
-      <text class="column" x="60" y="20">收入</text><text
+      <text class="column" x={columns[0]} y="20">收入</text><text
         class="column"
-        x="440"
+        x={columns[1]}
         y="20">项目 / 分配</text
-      ><text class="column" x="820" y="20">支出</text>
+      ><text class="column" x={columns[2]+12} text-anchor="end" y="20">支出</text>
       <defs
         >{#each flows.paths as p, i}<linearGradient
             id={flowId + "-" + i}
             gradientUnits="userSpaceOnUse"
-            x1={p.from.startsWith("i:") ? 72 : 452}
-            x2={p.from.startsWith("i:") ? 440 : 820}
+            x1={(p.from.startsWith("i:") ? columns[0] : columns[1])+12}
+            x2={p.from.startsWith("i:") ? columns[1] : columns[2]}
             ><stop stop-color={p.sourceColor} /><stop
               offset="1"
               stop-color={p.targetColor}
@@ -397,13 +405,13 @@
             rx="3"
             fill={color(n.id, n.label)}
           />
-          <text x={n.x + 19} y={n.y + 11}>{n.label}</text>
-          <text class="flow-amount" x={n.x + 19} y={n.y + 27}>{label}</text>
+          <text x={n.x===columns[2]?n.x-5:n.x+16} text-anchor={n.x===columns[2]?"end":"start"} y={n.y + 11}>{compact && n.label.length>7?n.label.slice(0,7)+"…":n.label}</text>
+          {#if !compact}<text class="flow-amount" x={n.x===columns[2]?n.x-5:n.x+16} text-anchor={n.x===columns[2]?"end":"start"} y={n.y + 27}>{label}</text>{/if}
         </g>
       {/each}
     </svg>
   </div>
-  {#if flows.nodes.length}<p class="flow-readout" role="status">
+  <p class="flow-readout" role="status">
       {#if hoveredPath}{hoveredPath.label} · {formatMoney(
           fromUnits(hoveredPath.n, asset),
         )}
@@ -411,8 +419,8 @@
           fromUnits(hoveredNode.incoming, asset),
         )} / 流出 {formatMoney(fromUnits(hoveredNode.outgoing, asset))}
       {:else}{month} · {asset} · {flows.paths.length} 条资金流向{/if}
-    </p>{/if}
-  {#if !flows.nodes.length}<p class="muted">本月没有 {asset} 收支流水</p>{/if}
+    </p>
+  {:else}<p class="muted">本月没有 {asset} 收支流水</p>{/if}
 {/if}
 
 <style>
@@ -421,6 +429,7 @@
     gap: 1rem;
     margin: 1rem 0;
   }
+  .flow-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:18px}.flow-heading h3{margin:0}.flow-heading .money-toolbar{margin:0}.flow-heading label{display:flex;align-items:center;gap:8px}
   .money-detail {
     padding: 1rem 0;
   }
@@ -435,8 +444,8 @@
     width: 100%;
     overflow: auto;
     margin: 1rem 0 0;
-    border: 1px solid var(--border);
-    border-radius: 10px;
+    border:0;
+    border-radius:16px;
     background: var(--surface);
     padding-top: 14px;
   }
@@ -463,10 +472,12 @@
   }
   .flow svg {
     width: 100%;
-    min-width: 700px;
+    display:block;
   }
   text {
     font-size: 12px;
     fill: var(--text);
   }
+  .money-toolbar label{min-width:0}.money-toolbar select{width:100%;min-width:0}
+  .money-toolbar{max-width:100%;gap:8px;flex-wrap:wrap}
 </style>

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import Icon from "../../lib/Icon.svelte";
+  let toolsOpen=false;
   import { onMount, tick } from "svelte";
   import type { ForceGraph3DInstance } from "3d-force-graph";
   import type { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
@@ -587,6 +589,10 @@
             >{:else}<span>没有匹配的资产</span>{/each}
         </div>{/if}
     </div>
+    <button class="icon-button" aria-label="图谱筛选" aria-expanded={toolsOpen} on:click={()=>toolsOpen=!toolsOpen}><Icon name="Settings"/></button>
+    <slot/>
+    {#if toolsOpen}<div class="graph-tools">
+      <slot name="filters"/>
     <select bind:value={filter} aria-label="关系筛选"
       ><option value="">全部关系</option
       >{#each Object.keys(filters) as type}<option>{type}</option
@@ -605,6 +611,7 @@
     ><button class="secondary" on:click={toggleFullscreen}
       >{fullscreen ? "退出全屏" : "全屏"}</button
     >
+    </div>{/if}
   </div>
   <div class="asset-canvas" class:with-selection={!!selected}>
     <div
@@ -708,8 +715,8 @@
 
 <style>
   .atlas-graph {
-    border: 1px solid var(--border);
-    border-radius: 10px;
+    border: 0;
+    border-radius: 18px;
     background: var(--surface);
     overflow: hidden;
     display: flex;
@@ -1108,4 +1115,14 @@
       padding: 6px 9px;
     }
   }
+  .canvas-toolbar{position:absolute;top:10px;left:10px;right:10px;flex-wrap:nowrap;gap:6px;padding:0;background:transparent;border:none}
+  .graph-search{min-width:0;max-width:280px}
+  .graph-search input,.canvas-toolbar>.icon-button{height:36px;background:var(--graph-glass);border:0;border-radius:12px;backdrop-filter:blur(12px)}
+  .canvas-toolbar>.icon-button{width:36px}
+  .graph-tools{position:absolute;right:0;top:44px;display:grid;gap:8px;min-width:min(220px,100%);max-width:100%;padding:12px;background:var(--surface);border-radius:14px;box-shadow:var(--shadow-lg)}
+  .canvas-toolbar .graph-tools select{width:100%}
+  .canvas-legend,.with-selection .canvas-legend{inset:auto 12px 48px;max-width:none;flex-wrap:nowrap;overflow:auto;scrollbar-width:none;gap:5px}
+  .canvas-legend button{flex:none;min-height:28px;border:0}
+  .selection-detail{padding-top:60px}
+  @media(max-width:700px){.asset-canvas{min-height:360px;height:calc(100dvh - 210px)}.with-selection .canvas-legend{bottom:249px}.selection-detail{padding-top:14px}}
 </style>

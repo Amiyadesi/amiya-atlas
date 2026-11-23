@@ -2,7 +2,7 @@ import compare from "semver/functions/compare.js";
 import { z } from "zod";
 import { invoke, isTauri } from "./runtime";
 
-export const APP_VERSION = "0.9.4";
+export const APP_VERSION = "0.9.5";
 export const compareSemver = compare;
 const MIRROR = "https://atlas.sayori.org/downloads";
 const RELEASES = "https://github.com/Amiyadesi/amiya-atlas/releases";

@@ -11,6 +11,7 @@ if (-not (Test-Path -LiteralPath 'src-tauri/gen/android/gradlew.bat')) {
   npm.cmd run tauri -- android init --ci
   if ($LASTEXITCODE -ne 0) { throw 'Android 初始化失败' }
 }
+Copy-Item -LiteralPath 'platform/MainActivity.kt' -Destination 'src-tauri/gen/android/app/src/main/java/org/sayori/atlas/MainActivity.kt' -Force
 $version = (Get-Content -LiteralPath 'src-tauri/tauri.conf.json' -Raw | ConvertFrom-Json).version
 $numbers = $version.Split('.')
 $versionCode = [int]$numbers[0] * 1000000 + [int]$numbers[1] * 1000 + [int]$numbers[2]

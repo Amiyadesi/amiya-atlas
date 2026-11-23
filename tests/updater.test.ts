@@ -15,6 +15,11 @@ const prefs = {source: "auto", autoCheck: true, customMirror: "", dismissedVersi
 afterEach(() => vi.unstubAllGlobals());
 
 describe("update checks", () => {
+  it("advertises the Android release without advancing other platform packages",()=>{
+    expect(manifest.version).toBe(APP_VERSION);
+    expect(manifest.assets.android).toMatchObject({version:APP_VERSION,filename:"Relakeep_"+APP_VERSION+"_arm64.apk"});
+    expect([manifest.assets.windows.version,manifest.assets.linuxWeb.version,manifest.assets.linuxDeb.version]).toEqual(["0.9.3","0.9.3","0.9.2"]);
+  });
   it("compares full semantic versions, normalizes tags and ignores build metadata", () => {
     for (const [a,b] of [["0.9.4","0.9.3"],["0.10.0","0.9.9"],["0.9.4","0.9.4-rc.2"],["0.9.4-rc.10","0.9.4-rc.2"]]) {
       expect(compareSemver(a,b)).toBe(1);

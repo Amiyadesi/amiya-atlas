@@ -2,6 +2,9 @@
   import { onMount, onDestroy } from "svelte";
   import { invoke, isTauri, isSelfhost } from "../../lib/runtime";
   import { selfRequest } from "../../lib/selfhost-auth";
+  import Icon from "../../lib/Icon.svelte";
+  import {isPersistent} from "../../lib/runtime";
+  export let summary:boolean, open:()=>void;
   export let changed: () => Promise<void>;
   let connected = false,
     email = "",
@@ -144,7 +147,7 @@
     if (message && tab) tab.close();
   }
   onMount(() => {
-    void run(refresh);
+    if(isPersistent) void run(refresh);
   });
   onDestroy(() => {
     disposed = true;
@@ -152,10 +155,15 @@
   });
 </script>
 
+{#if summary}
+  <button class="profile-row" on:click={open}><span class="profile-avatar"><Icon name="Account"/></span>
+    <span class="profile-name"><strong>{email || "登录官网账户"}</strong><small>{connected?"官网账户":"本地记忆库"}</small></span>
+    <span class="profile-status">{connected?(balance?.unlimited?"不限次数":balance?"剩余 "+balance.total+" 次":"额度待刷新"):"本地免费使用"}</span><Icon name="Chevron"/>
+  </button>
+{:else if !isPersistent}
+  <section class="panel"><p>浏览器预览使用临时记忆库。请在应用或自托管版中登录官网账户。</p><a class="text-button" href="https://atlas.sayori.org/pricing" target="_blank" rel="noreferrer">查看套餐</a></section>
+{:else}
 <div class="cloud-settings">
-  <div class="cloud-intro">
-    <strong>官网账户</strong>
-  </div>
   {#if features && !features.cloud}<span>云服务未开放</span>{/if}
   {#if connected}<div class="cloud-account">
       <span>{email}</span><button disabled={busy} on:click={logout}
@@ -219,112 +227,18 @@
   >
   {#if message}<p class="status" role="status">{message}</p>{/if}
 </div>
+{/if}
 
 <style>
-  .cloud-settings {
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-  }
-  .cloud-intro {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 20px;
-  }
-  p {
-    margin: 0;
-    font-size: 13px;
-    color: var(--muted);
-    line-height: 1.8;
-  }
-  button {
-    border: 1px solid var(--border);
-    background: var(--surface);
-    border-radius: 7px;
-    padding: 8px 13px;
-    color: var(--text);
-    cursor: pointer;
-    font: inherit;
-    font-size: 12px;
-    align-self: flex-start;
-  }
-  button:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-  .connect {
-    background: var(--accent);
-    color: var(--accent-text);
-  }
-  .cloud-account,
-  .cloud-balance {
-    display: flex;
-    align-items: center;
-    gap: 18px;
-    flex-wrap: wrap;
-  }
-  .cloud-account button,
-  .cloud-balance button {
-    margin-left: auto;
-  }
-  .cloud-account span {
-    font-size: 14px;
-  }
-  .cloud-balance {
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 20px;
-    background: var(--accent-soft);
-  }
-  .cloud-balance strong {
-    font-size: 30px;
-  }
-  .cloud-balance strong small {
-    font-size: 12px;
-    font-weight: 400;
-  }
-  .cloud-balance span {
-    font-size: 12px;
-    color: var(--muted);
-  }
-  .cloud-actions {
-    display: flex;
-    gap: 12px;
-    align-items: flex-end;
-    flex-wrap: wrap;
-  }
-  .cloud-actions label {
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-    font-size: 11px;
-    color: var(--muted);
-  }
-  select {
-    font: inherit;
-    border: 1px solid var(--border);
-    padding: 8px;
-    border-radius: 7px;
-    background: var(--surface);
-    color: var(--text);
-  }
-  .device-code {
-    font-size: 26px;
-    letter-spacing: 0.15em;
-    font-family: monospace;
-    padding: 12px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    text-align: center;
-    color: var(--accent);
-  }
-  .status {
-    color: var(--accent);
-    background: var(--accent-dim);
-    border: 1px solid var(--border);
-    padding: 12px;
-    border-radius: 6px;
-  }
+  .cloud-settings{display:grid;gap:0;padding:4px 18px;border-radius:18px;background:var(--surface);box-shadow:var(--shadow-sm)}
+  .cloud-settings>label,.cloud-account,.cloud-actions label{display:flex;align-items:center;justify-content:space-between;gap:12px}
+  .cloud-settings>label,.cloud-settings>a,.cloud-actions>*,.cloud-account,.cloud-settings>button{min-height:50px;padding:10px 0;text-align:left;border-bottom:.5px solid var(--border)}
+  .cloud-account span{overflow-wrap:anywhere;min-width:0}.cloud-account button{flex:none}
+  .cloud-settings button,.cloud-settings a{color:var(--accent);font-size:14px;background:none}.cloud-settings button{padding:8px}
+  .cloud-actions{display:grid}.cloud-settings select{max-width:70%;background:var(--surface-raised);border:0}
+  .cloud-balance{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:0 8px;padding:16px 0;border-bottom:.5px solid var(--border)}
+  .cloud-balance strong{font-size:30px}.cloud-balance span,.cloud-balance small{color:var(--muted);font-size:12px}
+  .cloud-balance span{grid-column:1}.cloud-balance button{grid-column:2;grid-row:1/3;align-self:center}
+  .cloud-settings .device-code{font-size:26px;letter-spacing:.15em;text-align:center;color:var(--accent);padding:12px}
+  .status{font-size:13px;color:var(--muted);padding:8px 0;margin:0}
 </style>

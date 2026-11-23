@@ -3,6 +3,7 @@
   export let busy = false;
   export let recording = false;
   export let voiceBusy = false;
+  export let voiceSupported=false;
   export let voiceReady = false;
   export let voiceLabel = "正在本机转写…";
   export let seconds = 0;
@@ -62,17 +63,16 @@
         type="button"
         on:click={paste}
         disabled={busy || recording || voiceBusy}
-        title="读取剪贴板文字">↙ <span>粘贴</span></button
+        title="读取剪贴板文字">粘贴</button
       >
-      <button
+      {#if voiceSupported}<button
         class="capture-tool"
         class:recording
         type="button"
         on:click={microphone}
         disabled={busy || voiceBusy}
         title={voiceReady ? "本地语音转写" : "前往设置准备语音模型"}
-        >{recording ? "■ 停止并转写" : "◉ 语音"}</button
-      >
+        >{recording ? "■ 停止并转写" : "语音"}</button>{/if}
     </div>
     <div class="capture-actions">
       <button

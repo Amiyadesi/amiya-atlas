@@ -535,7 +535,7 @@
     gap: 0.7rem;
     flex-wrap: wrap;
     margin: 1rem 0;
-    padding:12px 16px;background:var(--surface-raised);border-radius:8px;font-variant-numeric:tabular-nums;
+    padding:12px 16px;background:var(--surface-raised);border-radius:20px;font-variant-numeric:tabular-nums;
   }
   .market-quote label {
     width: auto;
@@ -571,7 +571,7 @@
   }
   .position {
     padding: 1.2rem 1.4rem;
-    border: 1px solid var(--border);border-radius:12px;background:var(--surface);margin:12px 0;
+    border:0;border-radius:16px;background:var(--surface);box-shadow:var(--shadow-sm);margin:12px 0;
   }
   small {
     display: block;
