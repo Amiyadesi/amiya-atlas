@@ -255,8 +255,8 @@
     cursor: not-allowed;
   }
   .connect {
-    background: #8163a2;
-    color: #ffffff;
+    background: var(--accent);
+    color: var(--accent-text);
   }
   .cloud-account,
   .cloud-balance {
@@ -276,7 +276,7 @@
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 20px;
-    background: #f1ebf7;
+    background: var(--accent-soft);
   }
   .cloud-balance strong {
     font-size: 30px;
@@ -318,12 +318,12 @@
     border: 1px solid var(--border);
     border-radius: 6px;
     text-align: center;
-    color: #8163a2;
+    color: var(--accent);
   }
   .status {
-    color: #6e5187;
-    background: #f0eaf7;
-    border: 1px solid #d9cae7;
+    color: var(--accent);
+    background: var(--accent-dim);
+    border: 1px solid var(--border);
     padding: 12px;
     border-radius: 6px;
   }

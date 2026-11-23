@@ -1,50 +1,106 @@
 <script lang="ts">
-  let { en = false } = $props<{ en?: boolean }>();
+  import SiteIcon from "./SiteIcon.svelte";
+
+  let { en = false }: { en?: boolean } = $props();
   const t = (zh: string, english: string) => en ? english : zh;
-  let selected = $state('google');
+  const tabs = ["connections", "ledger", "import"] as const;
+  type Tab = typeof tabs[number];
+  let tab = $state<Tab>("connections");
+  function moveTab(event: KeyboardEvent, index: number) {
+    const last = tabs.length - 1;
+    const next = ({ ArrowRight: (index + 1) % tabs.length, ArrowLeft: (index + last) % tabs.length, Home: 0, End: last })[event.key];
+    if (next === undefined) return;
+    event.preventDefault();
+    tab = tabs[next];
+    document.getElementById("tab-" + tab)!.focus();
+  }
+
   const records = [
-    { id: 'email', name: ['主邮箱', 'Primary email'], type: ['邮箱', 'Email'], icon: '@', x: 13, y: 12, tint: 'blue', detail: ['hello@example.invalid', 'hello@example.invalid'] },
-    { id: 'google', name: ['Google 主账号', 'Google account'], type: ['网站账号', 'Account'], icon: 'G', x: 46, y: 32, tint: 'violet', detail: ['2024 年 9 月注册', 'Created September 2024'] },
-    { id: 'sim', name: ['备用号码', 'Backup SIM'], type: ['电话卡', 'SIM'], icon: 'S', x: 9, y: 57, tint: 'yellow', detail: ['号码尾号 0826', 'Number ending in 0826'] },
-    { id: 'subscription', name: ['Google One', 'Google One'], type: ['订阅', 'Subscription'], icon: 'O', x: 60, y: 67, tint: 'pink', detail: ['2027 年 9 月续费', 'Renews September 2027'] },
-    { id: 'card', name: ['日常付款卡', 'Everyday card'], type: ['付款卡', 'Payment card'], icon: 'C', x: 63, y: 5, tint: 'mint', detail: ['尾号 1234', 'Ending in 1234'] },
-  ];
+    { id: "email", name: ["主邮箱", "Primary email"], detail: ["hello@example.invalid", "hello@example.invalid"], x: 19, y: 26 },
+    { id: "sim", name: ["备用号码", "Backup SIM"], detail: ["尾号 0826", "Ending in 0826"], x: 19, y: 68 },
+    { id: "google", name: ["Google 主账号", "Google account"], detail: ["网站账号", "Website account"], x: 48, y: 46 },
+    { id: "card", name: ["日常付款卡", "Everyday card"], detail: ["尾号 1234", "Ending in 1234"], x: 79, y: 20 },
+    { id: "subscription", name: ["Google One", "Google One"], detail: ["¥19/月", "¥19/mo"], x: 80, y: 68 },
+  ] as const;
+  type Asset = typeof records[number]["id"];
   const edges = [
-    { source: 'email', target: 'google', d: 'M150 127 C150 235 390 135 390 251', label: ['注册邮箱', 'Registration email'] },
-    { source: 'sim', target: 'google', d: 'M126 388 C240 388 179 251 288 251', label: ['找回号码', 'Recovery number'] },
-    { source: 'google', target: 'subscription', d: 'M390 293 C390 349 485 353 485 428', label: ['关联订阅', 'Subscription'] },
-    { source: 'card', target: 'subscription', d: 'M499 93 C657 93 574 484 486 484', label: ['支付订阅', 'Payment'] },
-  ];
-  const label = (value: string[]) => value[en ? 1 : 0];
-  let record = $derived(records.find(r => r.id === selected)!);
-  let relations = $derived(edges.filter(e => e.source === selected || e.target === selected));
+    { a: "email", b: "google", d: "M19 26 C35 26 30 46 48 46", out: ["用于登录", "Signs in to"], into: ["注册邮箱", "Sign-in email"] },
+    { a: "sim", b: "google", d: "M19 68 C35 68 30 46 48 46", out: ["用于找回", "Recovers"], into: ["找回号码", "Recovery number"] },
+    { a: "google", b: "subscription", d: "M48 46 C66 46 63 68 80 68", out: ["关联订阅", "Subscription"], into: ["所属账号", "Account"] },
+    { a: "card", b: "subscription", d: "M79 20 C96 20 97 68 80 68", out: ["支付订阅", "Pays for"], into: ["付款方式", "Payment method"] },
+  ] as const;
+  let selected = $state<Asset>("google");
+  const record = (id: Asset) => records.find(r => r.id === id)!;
+  const label = (pair: readonly [string, string]) => pair[en ? 1 : 0];
+  let links = $derived(edges.filter(e => e.a === selected || e.b === selected));
+  let booked = $state(false);
 </script>
 
-<div class="relation-atlas">
-  <div class="atlas-drawing">
-    <svg class="thread-map" viewBox="0 0 620 560" fill="none" aria-hidden="true">
-      <path class="loose-thread" d="M-10 183 C67 183 2 289 88 281 C158 274 181 472 266 504 C308 520 290 565 254 566" />
-      <path class="loose-thread" d="M604-14 C561 11 619 74 575 147" />
-      <circle cx="575" cy="147" r="5" fill="#b2b5d3"/>
-      {#each edges as edge}<path class="asset-thread" class:lit={edge.source === selected || edge.target === selected} d={edge.d}/>{/each}
-      <path class="pencil-loop" d="M261 246 C251 175 419 154 480 201 C525 236 468 327 370 326 C276 325 238 277 259 231"/>
-      <path d="m535 320 10 4-3 13m-7-13 19-12" stroke="#8486ab" stroke-width="1.5"/>
-    </svg>
-    {#each records as item}
-      <button class="asset-slip {item.tint}" class:chosen={selected === item.id} style:left="{item.x}%" style:top="{item.y}%" aria-pressed={selected === item.id} onclick={() => selected = item.id}>
-        <span class="slip-pin" aria-hidden="true"></span>
-        <span class="slip-type">{label(item.type)}</span>
-        <span class="slip-name"><span class="slip-icon" aria-hidden="true">{item.icon}</span><strong>{label(item.name)}</strong></span>
-        <span class="slip-detail">{label(item.detail)}</span>
+<div class="showcase">
+  <div class="window-bar">
+    <div><img src="/mark.svg" alt="" width="19" height="19" /><b>Relakeep</b><span class="crumb">/</span>{t("工作区", "Workspace")}</div>
+    <span class="sample"><i></i>{t("示例库", "Demo vault")}</span>
+  </div>
+  <div class="preview-tabs" role="tablist" aria-label={t("产品预览", "Product preview")}>
+    {#each tabs as item, i}
+      <button id={"tab-" + item} role="tab" aria-controls={"panel-" + item}
+        aria-selected={tab === item} tabindex={tab === item ? 0 : -1}
+        onclick={() => tab = item} onkeydown={(event) => moveTab(event, i)}>
+        <SiteIcon name={item} size={16} />{[t("关系图谱", "Connections"), t("复式账本", "Ledger"), t("本地导入", "Import")][i]}
       </button>
     {/each}
-    <span class="drawing-caption">{t('点一张笺，看看它连着什么', 'Pick a note. Follow its connections.')}</span>
   </div>
-  <div class="atlas-inspector" aria-live="polite">
-    <span class="inspector-name">{label(record.name)}</span>
-    <div>{#each relations as relation}{@const target = records.find(r => r.id === (relation.source === selected ? relation.target : relation.source))!}
-      <button onclick={() => selected = target.id}><span>{label(relation.label)}</span><strong>{label(target.name)}</strong></button>
-    {/each}</div>
-    <small>{t('虚构示例', 'Illustrative data')}</small>
+
+  <div id="panel-connections" role="tabpanel" aria-labelledby="tab-connections" hidden={tab !== "connections"}>
+    <div class="atlas-drawing">
+      <span class="map-count">{t("5 项资产 · 4 条关联", "5 assets · 4 connections")}</span>
+      <svg class="thread-map" viewBox="0 0 100 100" preserveAspectRatio="none" fill="none" aria-hidden="true">
+        {#each edges as edge}
+          <path class:lit={edge.a === selected || edge.b === selected} d={edge.d} vector-effect="non-scaling-stroke" />
+        {/each}
+      </svg>
+      {#each records as item}
+        <button class="asset-node node-{item.id}" style:left={item.x + "%"} style:top={item.y + "%"}
+          aria-pressed={selected === item.id} onclick={() => selected = item.id}>
+          <span class="node-icon">{#if item.id === "google"}G{:else}<SiteIcon name={item.id} size={21}/>{/if}</span>
+          <strong>{label(item.name)}</strong>
+          {#if item.id === "subscription"}<span class="fee">{label(item.detail)}</span>{/if}
+        </button>
+      {/each}
+    </div>
+    <div class="atlas-inspector" aria-live="polite">
+      <div class="inspect-heading"><strong>{label(record(selected).name)}</strong><span>{label(record(selected).detail)}</span></div>
+      <div class="inspect-links">
+        {#each links as link}
+          {@const other = record(link.a === selected ? link.b : link.a)}
+          <button onclick={() => selected = other.id}><small>{label(link.a === selected ? link.out : link.into)}</small>{label(other.name)} <span aria-hidden="true">↗</span></button>
+        {/each}
+      </div>
+    </div>
+  </div>
+
+  <div id="panel-ledger" class="demo-sheet" role="tabpanel" aria-labelledby="tab-ledger" hidden={tab !== "ledger"}>
+    <div class="sheet-title"><h2>{t("日常账本", "Everyday ledger")}</h2><span>CNY</span></div>
+    <div class="entry-line"><span>{t("午饭 22.5 微信", "Lunch 22.5 WeChat")}</span>
+      <button onclick={() => booked = !booked}>{booked ? t("撤销示例", "Undo") : t("试记一笔", "Book entry")}</button>
+    </div>
+    <div class="day-group" aria-live="polite">
+      <h3>{t("今天", "Today")}</h3>
+      {#if booked}<div><span>{t("午饭", "Lunch")} <small>· {t("微信", "WeChat")}</small></span><b class="expense">−¥22.50</b></div>{/if}
+      <div><span>{t("设计定金", "Design deposit")} <small>· {t("工作室", "Studio")}</small></span><b class="income">+¥800.00</b></div>
+      <h3>{t("昨天", "Yesterday")}</h3>
+      <div><span>Google One <small>· {t("订阅", "Subscription")}</small></span><b class="expense">−¥19.00</b></div>
+    </div>
+    <div class="budget"><label for="demo-budget">{t("本月餐饮预算", "Monthly food budget")}</label><b>¥{booked ? "210.00" : "187.50"} / ¥500</b>
+      <progress id="demo-budget" max="500" value={booked ? 210 : 187.5}></progress></div>
+    <a class="text-link" href={(en ? "/en" : "") + "/guide#bookkeeping"}>{t("查看项目成本分摊", "Explore project costs")} →</a>
+  </div>
+
+  <div id="panel-import" class="demo-sheet" role="tabpanel" aria-labelledby="tab-import" tabindex="0" hidden={tab !== "import"}>
+    <div class="sheet-title"><h2>{t("本地导入预览", "Local import preview")}</h2><SiteIcon name="lock" /></div>
+    <div class="import-file"><SiteIcon name="import"/><b>Bitwarden.json</b><span class="safe-tag">{t("已剔除密码", "Passwords stripped")}</span></div>
+    <div class="link-summary"><span class="node-icon"><SiteIcon name="email" /></span><div><strong>hello@example.invalid</strong><small>{t("1 个邮箱自动关联 3 个账号", "1 email automatically linked to 3 accounts")}</small></div></div>
+    <div class="bill-result"><h3>{t("微信 / 支付宝账单", "WeChat / Alipay bills")}</h3><p>{t("12 笔待入账，已跳过 2 笔重复流水。", "12 entries ready. 2 duplicates skipped.")}</p></div>
+    <div class="found-sub"><div><span>{t("发现可能的订阅", "Possible subscription")}</span><strong>Google One</strong></div><b>{t("¥19/月", "¥19/mo")}</b></div>
   </div>
 </div>

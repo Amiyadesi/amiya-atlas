@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { confirmDialog, promptDialog } from "../../lib/dialog";
   import { onDestroy, onMount } from "svelte";
   import { invoke, isTauri, isMobile, isSelfhost } from "../../lib/runtime";
   import type { SyncStatus } from "../../lib/sync";
@@ -54,9 +55,7 @@
   async function synchronize(strategy?: "local" | "remote") {
     if (
       strategy &&
-      !confirm(
-        `冲突条目${strategy === "local" ? "保留本机" : "使用远端"}版本？两份原始库会保留为加密备份。`,
-      )
+      !await confirmDialog({title: "解决同步冲突？", description: `冲突条目${strategy === "local" ? "保留本机" : "使用远端"}版本？两份原始库会保留为加密备份。`, confirmLabel: "应用所选版本"})
     )
       return;
     await run(async () => {
@@ -126,9 +125,7 @@
     });
   }
   async function adopt() {
-    const secret = prompt(
-      "导入远端记忆库将替换本机库，并保留本机加密备份。输入远端主密码以继续。",
-    );
+    const secret = await promptDialog({ title: "导入远端记忆库？", description: "远端库将替换本机库，本机原始库会保留为加密备份。", input: {label: "远端主密码", type: "password"}, danger: true, confirmLabel: "替换本机库" });
     if (!secret) return;
     await run(async () => {
       status = await invoke<SyncStatus>("sync_adopt", { password: secret });
@@ -302,10 +299,10 @@
     width: auto;
   }
   .sync-error {
-    color: #b43c49;
+    color: var(--expense);
   }
   .sync-conflicts {
-    border: 1px solid #c79872;
+    border: 1px solid var(--warning);
     padding: 15px;
     margin-top: 16px;
     border-radius: 7px;

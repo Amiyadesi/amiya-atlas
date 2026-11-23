@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { confirmDialog } from "../../lib/dialog";
   import { onMount } from "svelte";
   import { selfAuth, selfRequest } from "../../lib/selfhost-auth";
   let enabled = false,
@@ -96,7 +97,7 @@
       on:click={() =>
         run(async () => {
           if (linked) {
-            if (!confirm("解除官网账户关联，并撤销由官网登录的同步设备？"))
+            if (!await confirmDialog({title: "解除官网账户关联，并撤销由官网登录的同步设备？", danger: true}))
               return;
             await selfRequest("/api/security/cloud-unlink", {});
           } else await selfRequest("/api/security/cloud-link", {});
@@ -159,7 +160,7 @@
         disabled={busy}
         on:click={() =>
           run(async () => {
-            if (!confirm(`撤销「${key.name}」的同步权限？`)) return;
+            if (!await confirmDialog({title: `撤销「${key.name}」的同步权限？`, danger: true})) return;
             await selfRequest("/api/security/sync-keys/revoke", { id: key.id });
             await refresh();
           })}>撤销</button
@@ -207,7 +208,7 @@
       on:submit|preventDefault={enabled
         ? () =>
             run(async () => {
-              if (!confirm("关闭两步验证？")) return;
+              if (!await confirmDialog({title: "关闭两步验证？", danger: true})) return;
               const result = await selfAuth.twoFactor.disable({ password });
               if (result.error) throw new Error(result.error.message);
               password = "";
@@ -249,7 +250,7 @@
           disabled={busy}
           on:click={() =>
             run(async () => {
-              if (!confirm("删除这把通行密钥？")) return;
+              if (!await confirmDialog({title: "删除这把通行密钥？", danger: true})) return;
               const result = await selfAuth.passkey.deletePasskey({
                 id: key.id,
               });

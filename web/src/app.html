@@ -1,1 +1,19 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"/><link rel="icon" href="/mark.svg"/><meta name="viewport" content="width=device-width, initial-scale=1"/>%sveltekit.head%</head><body data-sveltekit-preload-data="hover"><div style="display:contents">%sveltekit.body%</div></body></html>
+<!doctype html>
+<html lang="%relakeep.lang%">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="/mark.svg" />
+    <script>
+      // Set the saved override before CSS loads. With no override, CSS follows the OS.
+      try {
+        const theme = localStorage.getItem("relakeep:web-theme");
+        if (theme === "dark" || theme === "light") document.documentElement.dataset.theme = theme;
+      } catch { /* Storage can be disabled; system colors still work. */ }
+    </script>
+    %sveltekit.head%
+  </head>
+  <body data-sveltekit-preload-data="hover">
+    <div style="display:contents">%sveltekit.body%</div>
+  </body>
+</html>

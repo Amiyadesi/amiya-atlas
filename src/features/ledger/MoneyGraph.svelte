@@ -1,6 +1,11 @@
 <script lang="ts">
-  import type { VaultSnapshot } from "../../lib/types";
-  import { isCommercialProject, monthlyCosts, periodReport } from "../../domain/reports";
+  import type { Entity, VaultSnapshot } from "../../lib/types";
+  import {
+    isCommercialProject,
+    monthlyCosts,
+    periodReport,
+    queryLedger,
+  } from "../../domain/reports";
   import { allocate } from "../../domain/allocation";
   import {
     ASSETS,
@@ -16,14 +21,35 @@
   export let rootId = "";
   export let mode: "graph" | "flow" = "graph";
   export let onOpen: (id: string) => void;
+  export let onConnect: ((entity: Entity) => void) | undefined = undefined;
+  export let onFavorite: ((entity: Entity) => void) | undefined = undefined;
+  let flowHover = "";
+  const flowId = "flow-" + crypto.randomUUID();
   let asset = "CNY",
-    selected = "";
-  $: costs = monthlyCosts(snapshot, `${month}-01`);
-  $: report = periodReport(snapshot, `${month}-01`, `${month}-31`);
+    selected = rootId;
+  $: visible = {
+    ...snapshot,
+    transactions: queryLedger(snapshot, {
+      from: "0000-01-01",
+      to: "9999-12-31",
+      metric: "all",
+      groupBy: "day",
+      search: "",
+    }),
+  };
+  $: costs = monthlyCosts(visible, `${month}-01`);
+  $: report = periodReport(visible, `${month}-01`, `${month}-31`);
   $: graph = withAllocations(snapshot, costs, asset);
   $: amounts = new Map([
     ...costs.rows
-      .filter((r) => !r.usage && r.monthly.asset === asset)
+      .filter(
+        (r) =>
+          !r.usage &&
+          r.monthly.asset === asset &&
+          !r.entity.fields.some(
+            (f) => f.key === "billing_period" && f.privacy === "SECRET",
+          ),
+      )
       .map((r) => [r.entity.id, r.monthly] as const),
     ...report.projects.map(
       (p) =>
@@ -34,8 +60,12 @@
         ] as const,
     ),
   ]);
+  const magnitude = (m: Money) => {
+    const n = units(m);
+    return n < 0n ? -n : n;
+  };
   $: max = [...amounts.values()].reduce(
-    (max, m) => (units(m) > max ? units(m) : max),
+    (max, m) => (magnitude(m) > max ? magnitude(m) : max),
     1n,
   );
   $: decorations = Object.fromEntries(
@@ -43,13 +73,42 @@
       id,
       {
         label: formatMoney(m),
-        weight: Number((units(m) * 1000n) / max) / 1000,
+        weight: Number((magnitude(m) * 1000n) / max) / 1000,
         idle: costs.rows.find((r) => r.entity.id === id)?.allocation.idle
           .amount,
       },
     ]),
   );
-  $: flows = buildFlows(snapshot, month, asset);
+  function color(id: string, label = "") {
+    if (id === "p:idle") return "var(--warning)";
+    if (id === "p:unassigned") return "var(--muted)";
+    if (id.startsWith("e:") && /账单|居住/.test(label)) return "var(--info)";
+    return id.startsWith("i:")
+      ? "var(--income)"
+      : id.startsWith("e:")
+        ? "var(--expense)"
+        : "var(--accent)";
+  }
+  $: flows = buildFlows(visible, month, asset);
+  $: hoveredNode = flows.nodes.find((n) => n.id === flowHover);
+  $: hoveredPath = flows.paths.find((p) => p.key === flowHover);
+  $: connected = trace(flows.paths, flowHover);
+  function trace(
+    paths: { from: string; to: string; key: string }[],
+    id: string,
+  ) {
+    const direct = paths.filter(
+      (p) => p.key === id || p.from === id || p.to === id,
+    );
+    const forward = new Set(direct.map((p) => p.to)),
+      backward = new Set(direct.map((p) => p.from));
+    return new Set(
+      [
+        ...direct,
+        ...paths.filter((p) => forward.has(p.from) || backward.has(p.to)),
+      ].map((p) => p.key),
+    );
+  }
   $: recent = report.transactions
     .filter(
       (t) =>
@@ -119,6 +178,11 @@
               })()
             : [{ projectId: "unassigned", amount: l.money }];
         for (const share of shares) {
+          if (
+            !["idle", "unassigned"].includes(share.projectId) &&
+            !names.has(share.projectId)
+          )
+            continue;
           const p = `p:${share.projectId}`;
           labels.set(
             p,
@@ -143,6 +207,8 @@
       x: id.startsWith("i:") ? 60 : id.startsWith("p:") ? 440 : 820,
       y: 0,
       height: 0,
+      incoming: 0n,
+      outgoing: 0n,
     }));
     let maxTotal = 1n;
     const totals = new Map<string, bigint>();
@@ -153,6 +219,8 @@
         outgoing = links
           .filter((l) => l.from === node.id)
           .reduce((n, l) => n + l.n, 0n);
+      node.incoming = incoming;
+      node.outgoing = outgoing;
       totals.set(node.id, incoming > outgoing ? incoming : outgoing);
     }
     for (const x of [60, 440, 820]) {
@@ -166,8 +234,8 @@
       let y = 40;
       for (const node of nodes.filter((n) => n.x === x)) {
         node.y = y;
-        node.height = Math.max(4, factor(totals.get(node.id) ?? 0n));
-        y += node.height + 28;
+        node.height = Math.max(6, factor(totals.get(node.id) ?? 0n));
+        y += node.height + 36;
       }
     }
     const offsets = new Map<string, number>();
@@ -183,6 +251,10 @@
       return [
         {
           ...l,
+          sourceColor: color(a.id, a.label),
+          targetColor: color(b.id, b.label),
+          key: l.from + "\\0" + l.to,
+          label: a.label + " → " + b.label,
           h,
           d: `M ${a.x + 14} ${ay} C ${a.x + 180} ${ay}, ${b.x - 180} ${by}, ${b.x} ${by}`,
         },
@@ -202,9 +274,9 @@
       >{#each ASSETS as a}<option value={a.code}>{a.code}</option
         >{/each}</select
     ></label
-  >{#if mode === "graph" && !rootId}<label
-      >资产<select bind:value={rootId}
-        ><option value="">选择起点</option
+  >{#if mode === "graph"}<label
+      >聚焦资产<select bind:value={rootId}
+        ><option value="">全部资产</option
         >{#each snapshot.entities.filter((e) => e.privacy !== "SECRET") as e}<option
             value={e.id}>{e.name}</option
           >{/each}</select
@@ -212,15 +284,18 @@
     >{/if}
 </div>
 {#if mode === "graph"}
-  {#if rootId}<ExploreCanvas
-      snapshot={graph}
-      {rootId}
-      moneyData={decorations}
-      onPick={(id) => (selected = id)}
-      onOpen={(id) => {
-        selected = id;
-      }}
-    />{/if}
+  <ExploreCanvas
+    snapshot={graph}
+    {rootId}
+    moneyData={decorations}
+    {onConnect}
+    {onFavorite}
+    {onOpen}
+    onPick={(id) => {
+      selected = id;
+      rootId = id;
+    }}
+  />
   {#if selected}<aside class="money-detail">
       <div class="section-heading">
         <h3>{snapshot.entities.find((e) => e.id === selected)?.name}</h3>
@@ -229,19 +304,20 @@
         >
       </div>
       {#if project}<p>
-          {#if snapshot.entities.some(e => e.id === project.id && isCommercialProject(e))}收入 {project.income
+          {#if snapshot.entities.some((e) => e.id === project.id && isCommercialProject(e))}收入
+            {project.income
+              .filter((m) => m.asset === asset)
+              .map(formatMoney)
+              .join(" · ") || "—"} /
+          {/if}成本 {total([...project.direct, ...project.allocated])
             .filter((m) => m.asset === asset)
             .map(formatMoney)
-            .join(" · ") || "—"} / {/if}成本 {total([
-            ...project.direct,
-            ...project.allocated,
-          ])
-            .filter((m) => m.asset === asset)
-            .map(formatMoney)
-            .join(" · ") || "—"}{#if snapshot.entities.some(e => e.id === project.id && isCommercialProject(e))} / 利润 {project.profit
-            .filter((m) => m.asset === asset)
-            .map(formatMoney)
-            .join(" · ") || "—"}{/if}
+            .join(" · ") ||
+            "—"}{#if snapshot.entities.some((e) => e.id === project.id && isCommercialProject(e))}
+            / 利润 {project.profit
+              .filter((m) => m.asset === asset)
+              .map(formatMoney)
+              .join(" · ") || "—"}{/if}
         </p>{/if}{#each recent as t}<div class="money-row">
           <span>{t.occurredAt} · {t.note || t.payee || t.kind}</span><strong
             >{total(
@@ -263,28 +339,79 @@
     tabindex="0"
   >
     <svg
-      viewBox={`0 0 1000 ${flows.height}`}
-      role="img"
+      viewBox={`0 0 1040 ${flows.height}`}
+      role="group"
       aria-label="收入、项目与成本流向"
-      ><text x="60" y="20">收入</text><text x="440" y="20">项目</text><text
-        x="820"
-        y="20">成本</text
-      >{#each flows.paths as p}<path
+    >
+      <text class="column" x="60" y="20">收入</text><text
+        class="column"
+        x="440"
+        y="20">项目 / 分配</text
+      ><text class="column" x="820" y="20">支出</text>
+      <defs
+        >{#each flows.paths as p, i}<linearGradient
+            id={flowId + "-" + i}
+            gradientUnits="userSpaceOnUse"
+            x1={p.from.startsWith("i:") ? 72 : 452}
+            x2={p.from.startsWith("i:") ? 440 : 820}
+            ><stop stop-color={p.sourceColor} /><stop
+              offset="1"
+              stop-color={p.targetColor}
+            /></linearGradient
+          >{/each}</defs
+      >
+      {#each flows.paths as p, i}<path
+          role="img"
+          aria-label={p.label + "：" + formatMoney(fromUnits(p.n, asset))}
           d={p.d}
           fill="none"
-          stroke="var(--accent)"
-          opacity=".23"
+          stroke={`url(#${flowId}-${i})`}
+          opacity={flowHover ? (connected.has(p.key) ? 0.76 : 0.07) : 0.32}
           stroke-width={p.h}
-          ><title>{formatMoney(fromUnits(p.n, asset))}</title></path
-        >{/each}{#each flows.nodes as n}<rect
-          x={n.x}
-          y={n.y}
-          width="14"
-          height={n.height}
-          fill={n.id === "p:idle" ? "#aaa" : "var(--accent)"}
-        /><text x={n.x + 20} y={n.y + 12}>{n.label}</text>{/each}</svg
-    >
+          on:pointerenter={() => (flowHover = p.key)}
+          on:pointerleave={() => (flowHover = "")}
+        >
+          <title>{p.label}：{formatMoney(fromUnits(p.n, asset))}</title></path
+        >{/each}
+      {#each flows.nodes as n}
+        {@const label =
+          n.incoming && n.outgoing
+            ? `入 ${formatMoney(fromUnits(n.incoming, asset))} / 出 ${formatMoney(fromUnits(n.outgoing, asset))}`
+            : formatMoney(fromUnits(n.incoming || n.outgoing, asset))}
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard focus reveals the same paths as pointer hover.) -->
+        <g
+          role="group"
+          tabindex="0"
+          aria-label={n.label + "：" + label}
+          on:pointerenter={() => (flowHover = n.id)}
+          on:pointerleave={() => (flowHover = "")}
+          on:focus={() => (flowHover = n.id)}
+          on:blur={() => (flowHover = "")}
+        >
+          <title>{n.label}：{label}</title>
+          <rect
+            x={n.x}
+            y={n.y}
+            width="12"
+            height={n.height}
+            rx="3"
+            fill={color(n.id, n.label)}
+          />
+          <text x={n.x + 19} y={n.y + 11}>{n.label}</text>
+          <text class="flow-amount" x={n.x + 19} y={n.y + 27}>{label}</text>
+        </g>
+      {/each}
+    </svg>
   </div>
+  {#if flows.nodes.length}<p class="flow-readout" role="status">
+      {#if hoveredPath}{hoveredPath.label} · {formatMoney(
+          fromUnits(hoveredPath.n, asset),
+        )}
+      {:else if hoveredNode}{hoveredNode.label} · 流入 {formatMoney(
+          fromUnits(hoveredNode.incoming, asset),
+        )} / 流出 {formatMoney(fromUnits(hoveredNode.outgoing, asset))}
+      {:else}{month} · {asset} · {flows.paths.length} 条资金流向{/if}
+    </p>{/if}
   {#if !flows.nodes.length}<p class="muted">本月没有 {asset} 收支流水</p>{/if}
 {/if}
 
@@ -307,7 +434,32 @@
   .flow {
     width: 100%;
     overflow: auto;
-    margin: 1rem 0;
+    margin: 1rem 0 0;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface);
+    padding-top: 14px;
+  }
+  .flow-readout {
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 8px;
+  }
+  .flow g {
+    cursor: crosshair;
+  }
+  .flow text {
+    paint-order: stroke;
+    stroke: var(--surface);
+    stroke-width: 3px;
+    stroke-linejoin: round;
+  }
+  .flow .column {
+    font-weight: 650;
+  }
+  .flow .flow-amount {
+    fill: var(--muted);
+    font-size: 11px;
   }
   .flow svg {
     width: 100%;

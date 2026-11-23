@@ -1,4 +1,18 @@
 <script lang="ts">
+  import ImportCenter from "./features/import/ImportCenter.svelte";
+  import StarterCard from "./features/onboarding/StarterCard.svelte";
+  import QuickEntry from "./features/ledger/QuickEntry.svelte";
+  import type {ImportTab} from "./domain/importers/types";
+  import {reverseTransaction,validateLedger} from "./domain/ledger";
+  import {budgetPercent} from "./domain/ledger-view";
+  import {money,total} from "./domain/money";
+  import { cancelDialogs, confirmDialog, promptDialog } from "./lib/dialog";
+  import DialogHost from "./lib/DialogHost.svelte";
+  import CommandPalette from "./features/command/CommandPalette.svelte";
+  import type { Command } from "./features/command/search";
+  import { initTheme, themePreference, resolvedTheme, themeNames, setTheme, cycleTheme, type Preference } from "./lib/theme";
+  import { categoryColors } from "./features/graph/layout";
+  import { memoryIndex, sortMemory, sortNames, type MemorySort } from "./lib/memory";
   import LedgerPage from './features/ledger/LedgerPage.svelte';
   import MoneyGraph from './features/ledger/MoneyGraph.svelte';
   import {localLedgerProposal} from './domain/finance-capture';
@@ -90,11 +104,76 @@
   let syncError = "";
   let snapshot: VaultSnapshot = emptySnapshot();
   let page: Page = "Home";
+  const paletteShortcut = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘ K" : "Ctrl K";
+  let paletteOpen = false, relationEditor = false;
+  let ledgerPage: LedgerPage;
+  let importTab:ImportTab|null=null, captureMode:"asset"|"bill"="asset", draftEntity:Entity|undefined;
+  let quickUndo:{revision:number;ids:string[]}|null=null;
+  async function saveLocal(next:VaultSnapshot,message:string) {
+    if(busy || mode!=="ready") throw new Error("请等待当前操作完成");
+    const token=epoch;busy=true;
+    try {const value=await saveSnapshot(next);
+      if(token!==epoch) return;
+      snapshot=value;flash(message);
+    } finally {if(token===epoch)busy=false;}
+  }
+  async function saveQuick(next:VaultSnapshot,ids:string[]) {
+    const token=epoch;
+    await saveLocal(next,"已入账 "+ids.length+" 笔");
+    if(epoch===token)quickUndo={revision:snapshot.revision,ids};
+  }
+  async function undoQuick() {
+    if(!quickUndo || quickUndo.revision!==snapshot.revision || busy)return;
+    try {
+      const ids=new Set(quickUndo.ids),txs=snapshot.transactions??[];
+      const next={...snapshot,transactions:[...txs,...txs.filter(t=>ids.has(t.id)).map(t=>reverseTransaction(t,t.occurredAt))]};
+      validateLedger(next,snapshot);await saveLocal(next,"已撤销，原流水与冲正分录均已保留");quickUndo=null;
+    }catch(e){error=readable(e);}
+  }
+  async function ledgerView(tab:string){navigate("Ledger");await tick();ledgerPage.showTab(tab);}
+  function canSwitchCapture() {
+    if (!recording && !voiceBusy) return true;
+    flash("请先完成或取消录音");
+    return false;
+  }
+  async function startExpense() {
+    if (!canSwitchCapture()) return;
+    captureMode="bill";
+    await tick();
+    document.querySelector<HTMLInputElement>(".recording-workspace [aria-label='一句话记账']")?.focus();
+  }
+  let memoryView: "list" | "card" = "list", memorySort: MemorySort = "updated";
+  function openPalette() {
+    if (mode === "ready" && !busy && !recording && !voiceBusy && !document.querySelector("dialog[open]")) paletteOpen = true;
+  }
+  async function ledgerCommand(id?: string) {
+    navigate("Ledger");
+    await tick();
+    if (id) ledgerPage.showAccount(id); else ledgerPage.openEntry();
+  }
+  function showImport(tab:ImportTab) { if (canSwitchCapture()) importTab=tab; }
+  function openImport() { showImport("assets"); }
+  $: commands = [
+    {label:"新建记录", run:()=>editRecord()},
+    {label:"记一笔", run:()=>ledgerCommand()},
+    {label:"导入数据", detail:"账号、密码管理器与账单", run:openImport},
+    {label:"切换浅/暗色模式", detail:themeNames[$resolvedTheme], run:()=>setTheme($resolvedTheme === "dark" ? "light" : "dark")},
+    {label:"导出加密备份", detail:isPersistent ? undefined : "需要持久记忆库", disabled:!isPersistent, run:backup},
+    {label:"锁定记忆库", run:lock},
+  ].map(c=>({...c, group:"操作"})) as Command[];
+  $: paletteCommands = [...commands, ...pages.map(p=>({label:labels[p], group:"页面", keywords:p, run:()=>navigate(p)}))];
   let graphMode="relation";
   const currentMonth=dateToday().slice(0,7);
   $: homeReport=periodReport(snapshot,`${currentMonth}-01`,`${currentMonth}-31`);
   $: homeCosts=monthlyCosts(snapshot,`${currentMonth}-01`);
   $: homePayments=expectedPayments(snapshot,currentMonth);
+  $: homeBudgets=(snapshot.financeRecords??[]).flatMap(b=>{
+    if(b.type!=="budget" || b.month!==currentMonth)return [];
+    const p=homeReport.projects.find(v=>v.id===b.projectId);
+    const spend=(b.projectId?total([...(p?.direct??[]),...(p?.allocated??[])]):homeReport.expense).find(v=>v.asset===b.value.asset)??money("0",b.value.asset);
+    const percent=budgetPercent(spend,b.value);
+    return [(b.projectId?(p?.name??"项目")+" ":"")+b.value.asset+" "+(Number.isFinite(percent)?percent.toFixed(0)+"%":"超支")];
+  });
   let password = "";
   let passwordConfirm = "";
   let rememberDevice = isWindows;
@@ -181,11 +260,13 @@
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
     .slice(0, 6);
   $: connectionNeeds = new Set(snapshot.entities.filter(e=>e.privacy!=="SECRET" && (connectionGaps(e,snapshot).length || connectionSlots(e.category).some(slot=>!slotRelations(slot,e.id,snapshot.relations).length && connectionHints(e,slot).length))).map(e=>e.id));
-  $: results = searchEntities(
+  $: memoryColors = categoryColors($resolvedTheme);
+  $: memoryMeta = memoryIndex(snapshot);
+  $: results = sortMemory(searchEntities(
     snapshot,
     interpretedQuery?.search ?? query,
     interpretedQuery?.region ?? "",
-  ).filter(entity => (!recordGroup || categoryGroup(entity.category) === recordGroup) && (!connectionsOnly || connectionNeeds.has(entity.id)));
+  ).filter(entity => (!recordGroup || categoryGroup(entity.category) === recordGroup) && (!connectionsOnly || connectionNeeds.has(entity.id))), memorySort, memoryMeta);
   $: selected = snapshot.entities.find(
     (e) => e.id === selectedId && e.privacy !== "SECRET",
   );
@@ -260,15 +341,19 @@
   async function favorite(entity: Entity) {
     if (busy) return;
     busy=true;
+    const token = epoch;
     try {
       const next=structuredClone(snapshot), item=next.entities.find(e=>e.id===entity.id)!;
       item.tags=item.tags.some(isFavorite)?item.tags.filter(t=>!isFavorite(t)):[...item.tags,"⭐ 收藏"];
       item.updatedAt=new Date().toISOString();
-      snapshot=await saveSnapshot(next);
-    } catch(value) {error=readable(value);}
-    finally {busy=false;}
+      const updated = await saveSnapshot(next);
+      if (token === epoch) snapshot = updated;
+    } catch(value) {if (token === epoch) error=readable(value);}
+    finally {if (token === epoch) busy=false;}
   }
-  function editRecord(entity?: Entity) {
+  function editRecord(entity?: Entity, relations = false) {
+    relationEditor = relations;
+    draftEntity = undefined;
     editedEntity = entity;
     editorOpen = true;
   }
@@ -285,6 +370,7 @@
     catch (value) { error = readable(value); }
   }
   function explore(id: string) {
+    graphMode = "relation";
     selectedId = "";
     rootId = id;
     page = "Explore";
@@ -310,6 +396,9 @@
     connection = "";
   }
   function clearPrivateState() {
+    paletteOpen = connectionsOpen = false;
+    importTab=null; quickUndo=null; draftEntity=undefined; captureMode="asset";
+    cancelDialogs();
     editorOpen = false;
     editedEntity = undefined;
     clearCloudRetries();
@@ -394,7 +483,7 @@
     try {
       if (isHttpHost && !(await hasWebAccess())) { mode = "access"; return; }
       const deviceCode = isSelfhost ? new URLSearchParams(location.search).get("user_code") : null;
-      if (deviceCode && window.confirm(`允许设备 ${deviceCode} 同步此服务器？`)) { await selfRequest("/api/auth/device?user_code=" + encodeURIComponent(deviceCode)); await selfRequest("/api/auth/device/approve", { userCode: deviceCode }); history.replaceState(null, "", location.pathname); flash("设备已连接"); }
+      if (deviceCode && await confirmDialog({ title: "允许设备同步？", description: `设备代码：${deviceCode}`, confirmLabel: "允许同步" })) { await selfRequest("/api/auth/device?user_code=" + encodeURIComponent(deviceCode)); await selfRequest("/api/auth/device/approve", { userCode: deviceCode }); history.replaceState(null, "", location.pathname); flash("设备已连接"); }
       const status = await vaultStatus();
       deviceUnlockEnabled = isWindows && Boolean(status.deviceUnlockEnabled);
       rememberDevice = isWindows;
@@ -417,6 +506,7 @@
     error = ""; setWebAccess(access); access = ""; await boot();
   }
   onMount(() => {
+    const stopTheme = initTheme();
     const unlisteners: Array<() => void> = [];
     let alive = true;
     if (isTauri)
@@ -452,7 +542,7 @@
         e.key.toLowerCase() === "k"
       ) {
         e.preventDefault();
-        void openQuickCapture();
+        openPalette();
       }
       if (e.key === "Escape" && (recording || voiceBusy)) {
         e.preventDefault();
@@ -484,6 +574,7 @@
     const timer = window.setInterval(() => void sync(), 30000);
     void boot();
     return () => {
+      stopTheme();
       alive = false;
       epoch++;
       stopVoice();
@@ -572,7 +663,7 @@
   }
   async function toggleDeviceUnlock() {
     if (busy) return;
-    if (!deviceUnlockEnabled && !window.confirm("开启自动解锁？使用当前 Windows 账户的人都能打开记忆库。")) return;
+    if (!deviceUnlockEnabled && !await confirmDialog({ title: "开启自动解锁？", description: "使用当前 Windows 账户的人都能打开记忆库。", confirmLabel: "开启" })) return;
     busy = true;
     error = "";
     try {
@@ -635,14 +726,25 @@
       }
     }
   }
-  async function stageFinance(raw:string,proposal:Proposal) {
-    const before=new Set(snapshot.captures?.map(c=>c.id));
-    snapshot=await beginTextCapture(raw,'text');
-    const capture=snapshot.captures?.find(c=>!before.has(c.id));
-    if(!capture)throw new Error('原文未保存');
-    snapshot=await stageProposal(capture.id,proposal,'本地账本');
-    previewId=snapshot.proposals?.find(p=>p.captureId===capture.id&&p.status==='PENDING')?.id??'';
-    page='Inbox';
+  async function stageFinance(raw: string, proposal: Proposal) {
+    if (busy) return;
+    const token = epoch;
+    busy = true;
+    try {
+      const before = new Set(snapshot.captures?.map(c => c.id));
+      const captured = await beginTextCapture(raw, "text");
+      if (token !== epoch) return;
+      snapshot = captured;
+      const capture = captured.captures?.find(c => !before.has(c.id));
+      if (!capture) throw new Error("原文未保存");
+      const staged = await stageProposal(capture.id, proposal, "本地账本");
+      if (token !== epoch) return;
+      snapshot = staged;
+      previewId = staged.proposals?.find(p => p.captureId === capture.id && p.status === "PENDING")?.id ?? "";
+      page = "Inbox";
+    } finally {
+      if (token === epoch) busy = false;
+    }
   }
   async function capture(parseNow: boolean) {
     if (!text.trim() || busy || recording || voiceBusy) return;
@@ -842,6 +944,7 @@
       flash("正在处理当前记录，请稍等。");
       return;
     }
+    if (document.querySelector("dialog[open]") && !quickOpen) return;
     quickOpen = true;
     await tick();
     if (!quickOpen || mode !== "ready") return;
@@ -1054,7 +1157,7 @@
     epoch++;
     try {
       if (kind === "restore") {
-        const secret = prompt("恢复将替换当前记忆库。输入备份主密码以继续。");
+        const secret = await promptDialog({ title: "恢复加密备份？", description: "恢复将替换当前记忆库。", input: {label: "备份主密码", type: "password"}, danger: true, confirmLabel: "恢复备份" });
         if (!secret) return;
         snapshot = await importBackup(payload, secret);
         const warning = (snapshot as VaultSnapshot & {restoreWarning?:string}).restoreWarning;
@@ -1093,6 +1196,7 @@
   }
 </script>
 
+<DialogHost />
 {#if mode !== "ready"}
   <main class="lock-screen">
     <section class="lock-card">
@@ -1152,6 +1256,8 @@
   </main>
 {:else}
   <div class="app-shell">
+    {#if paletteOpen}<CommandPalette {snapshot} commands={paletteCommands} {openEntity} {explore} account={ledgerCommand}
+      preview={stageFinance} close={() => paletteOpen = false} failed={e => error = readable(e)}/>{/if}
     <aside class="sidebar">
       <a
         class="brand"
@@ -1178,6 +1284,7 @@
           >{/each}
       </nav>
       <div class="sidebar-bottom">
+        <button class="theme-cycle" on:click={cycleTheme} aria-label={"切换主题：" + themeNames[$themePreference]}><Icon name="Theme"/>{themeNames[$themePreference]}</button>
         <div class="local-label">
           <span></span>{config.kind === "openai-compatible"
             ? "自带 API"
@@ -1188,8 +1295,12 @@
       </div>
     </aside>
     <main class="main-area">
-      {#if !isPersistent}<header class="topbar"><span role="status">浏览器预览 · 刷新会清空数据</span></header>{/if}
+      <header class="topbar">
+        <div class="location"><Icon name={page}/><span>{labels[page]}</span>{#if !isPersistent}<small role="status">浏览器预览 · 刷新会清空数据</small>{/if}</div>
+        <button class="command-trigger" on:click={openPalette} aria-label="打开命令面板" disabled={busy || recording || voiceBusy}><Icon name="Search"/><span>搜索或执行操作</span><kbd>{paletteShortcut}</kbd></button>
+      </header>
       <div class="page-content">
+        {#if quickUndo?.revision===snapshot.revision && !error}<div class="commit-feedback" role="status"><span>{notice||"已入账"}</span><button class="secondary" disabled={busy} on:click={undoQuick}>撤销入账</button></div>{/if}
         {#if lastUndo && !error && !notice}<div class="commit-feedback" role="status">
             <span>已保存</span><button
               class="secondary"
@@ -1199,7 +1310,7 @@
           </div>{/if}
         {#if error}<div class="error" role="alert">
             {error}<button class="text-button" aria-label="关闭错误提示" on:click={() => error = ""}>×</button>
-          </div>{:else if notice}<div class="notice" role="status">
+          </div>{:else if notice && quickUndo?.revision!==snapshot.revision}<div class="notice" role="status">
             {notice}<button aria-label="关闭提示" on:click={() => (notice = "")}
               >×</button
             >
@@ -1211,6 +1322,8 @@
             <h1>随手记</h1>
             <button class="secondary" on:click={() => editRecord()}>＋ 手动记录</button>
           </section>
+          <div class="segmented capture-mode" role="group" aria-label="首页录入模式"><button aria-pressed={captureMode==="asset"} on:click={()=>captureMode="asset"}>随手记资产</button><button disabled={recording||voiceBusy} aria-pressed={captureMode==="bill"} on:click={startExpense}>快速记一笔</button></div>
+          {#if captureMode==="bill"}<QuickEntry home {snapshot} {config} stage={stageFinance} save={saveQuick}/>{:else}
           <CaptureComposer
             bind:text
             bind:input={captureInput}
@@ -1227,7 +1340,13 @@
             {microphone}
             cancelRecording={stopVoice}
           />
-          {#if snapshot.ledgerAccounts?.length || homeCosts.rows.length}<button class="home-ledger-summary" on:click={()=>navigate('Ledger')}><span>本月支出<strong>{homeReport.expense.map(formatMoney).join(' · ')||'—'}</strong></span><span>本月收入<strong>{homeReport.income.map(formatMoney).join(' · ')||'—'}</strong></span><span>固定月成本<strong>{homeCosts.totals.map(formatMoney).join(' · ')||'—'}</strong></span><span>闲置容量<strong>{homeReport.idle.map(formatMoney).join(' · ')||'—'}</strong></span><span>即将扣费<strong>{homePayments.filter(p=>!p.actual).length} 项</strong></span></button>{/if}
+          {/if}
+          <StarterCard {snapshot} open={showImport} quick={startExpense} save={saveLocal}/>
+          <div class="home-ledger-summary" aria-label="本月账本概览">
+            {#each [["本月支出",homeReport.expense.map(formatMoney).join(" · ")||"—","流水","expense"],["本月收入",homeReport.income.map(formatMoney).join(" · ")||"—","流水","income"],["固定月成本",homeCosts.totals.map(formatMoney).join(" · ")||"—","资源成本",""],["预算使用进度",homeBudgets.join(" · ")||"未设置","回顾",""],["即将扣费",homePayments.filter(p=>!p.actual && p.due>=dateToday()).length+" 项","资源成本",""]] as metric}
+              <button on:click={()=>ledgerView(metric[2])}><span>{metric[0]}</span><strong class={metric[3]}>{metric[1]}</strong></button>
+            {/each}
+          </div>
           <div class="example-row">
             <span>示例</span
             >{#each ["一个号码", "一项订阅", "一次注册"] as label, i}<button
@@ -1435,7 +1554,7 @@
                     </footer>
                   </blockquote>{/each}{/if}
             </article>{:else}<div class="page-heading">
-              <h1>你的记忆</h1><div class="button-row"><button class="secondary" on:click={()=>connectionsOpen=true}>从字段补全关联</button><button class="primary" on:click={() => editRecord()}>＋ 新建记录</button></div>
+              <h1>你的记忆</h1><div class="button-row"><button class="secondary" on:click={openImport}>导入数据</button><button class="secondary" on:click={()=>connectionsOpen=true}>从字段补全关联</button><button class="primary" on:click={() => editRecord()}>＋ 新建记录</button></div>
             </div>
             <div class="record-filters" aria-label="记录分类"><button class:chosen={!recordGroup && !connectionsOnly} on:click={() => {recordGroup = "";connectionsOnly=false;}}>全部</button>{#each RECORD_GROUPS as group}<button class:chosen={recordGroup === group.label} on:click={() => recordGroup = group.label}>{group.label}</button>{/each}{#if connectionNeeds.size}<button class:chosen={connectionsOnly} on:click={()=>connectionsOnly=!connectionsOnly}>待补关联 {connectionNeeds.size}</button>{/if}</div>
             <div class="search-box" role="search" aria-label="查找已确认的记忆">
@@ -1472,40 +1591,47 @@
               </p>{/if}
             <div class="list-heading">
               <span>{results.length} 条记忆</span>
+              <div class="memory-controls"><select aria-label="记忆排序" bind:value={memorySort}>{#each Object.entries(sortNames) as [key,title]}<option value={key}>{title}</option>{/each}</select>
+                <div class="segmented" role="group" aria-label="记忆视图">
+                  <button aria-pressed={memoryView === "list"} on:click={()=>memoryView="list"}><Icon name="List"/>列表</button>
+                  <button aria-pressed={memoryView === "card"} on:click={()=>memoryView="card"}><Icon name="Grid"/>卡片</button>
+                </div>
+              </div>
             </div>
-            {#if results.length}<div class="entity-list">
-                {#each results as entity}<button
-                    class="entity-list-item"
-                    on:click={() => openEntity(entity.id)}
-                    ><span class="entity-icon"
-                      >{entity.name.slice(0, 1).toUpperCase()}</span
-                    >
-                    <div>
-                      <strong>{entity.name}</strong><small
-                        >{categoryLabel(entity.category)} · {statusLabel(entity.status)}{connectionNeeds.has(entity.id)?" · 待补关联":""}</small
-                      >
+            {#if memorySort === "cost"}<p class="muted">按币种分组，同币种按月费从高到低排列。</p>{/if}
+            {#if results.length}<div class="entity-list" class:cards={memoryView === "card"}>
+                {#each results as entity (entity.id)}{@const meta = memoryMeta.get(entity.id)!}
+                  <button class="entity-list-item" on:click={() => openEntity(entity.id)}>
+                    <span class="entity-icon" style={`--category:${memoryColors[categoryGroup(entity.category)]}`}>{entity.name.slice(0, 1).toUpperCase()}</span>
+                    <div class="memory-identity"><strong>{entity.name}</strong>{#if meta.favorite}<span class="favorite-star" aria-label="已收藏">★</span>{/if}
+                      <small><i class="category-dot" style:background={memoryColors[categoryGroup(entity.category)]}></i>{categoryLabel(entity.category)} · {statusLabel(entity.status)}{connectionNeeds.has(entity.id) ? " · 待补关联" : ""}</small>
                     </div>
-                    <span>↗</span></button
-                  >{/each}
+                    {#if meta.summary || meta.cost}<span class="memory-summary">{meta.summary}{#if meta.cost}<b>{formatMoney(meta.cost)} / 月</b>{/if}</span>{/if}
+                    <span class="relation-count" aria-label={meta.count + " 条关联"}><Icon name="Link"/>{meta.count}</span>
+                  </button>
+                {/each}
               </div>{:else}<div class="empty-state">
                 没有找到相关记忆。试试名称、地区或备注中的关键词。
               </div>{/if}{/if}
         {:else if page === "Ledger"}
-          <LedgerPage {snapshot} {config} {download} saved={next=>snapshot=next} stage={stageFinance} edit={entity=>editRecord(entity)} />
+          <LedgerPage bind:this={ledgerPage} {snapshot} {config} {download} saved={next=>snapshot=next} stage={stageFinance} edit={entity=>editRecord(entity)} quickSave={saveQuick} openImport={()=>showImport("bills")} subscription={e=>{editRecord();draftEntity=e;}} notify={flash} />
         {:else if page === "Explore"}
           <div class="page-heading">
-            <h1>关系图</h1><div class="button-row"><button class="secondary" on:click={()=>graphMode="relation"}>关系</button><button class="secondary" on:click={()=>graphMode="money"}>金钱</button></div>
+            <h1>关系图</h1><div class="segmented" role="group" aria-label="图谱视图"><button aria-pressed={graphMode === "relation"} on:click={()=>graphMode="relation"}>关系</button><button aria-pressed={graphMode === "money"} on:click={()=>graphMode="money"}>金钱</button></div>
           </div>
-          {#if graphMode==="money"}<MoneyGraph {snapshot} {rootId} month={currentMonth} onOpen={openEntity}/>{:else}<ExploreCanvas
+          {#if graphMode==="money"}<MoneyGraph {snapshot} {rootId} month={currentMonth} onFavorite={favorite} onConnect={e => editRecord(e,true)} onOpen={openEntity}/>{:else}<ExploreCanvas
               {snapshot}
               {rootId}
-              onOpen={openEntity}
+              onOpen={openEntity} onFavorite={favorite} onConnect={e => editRecord(e,true)}
             />{/if}
         {:else if page === "Settings"}
           <div class="page-heading">
-            <h1>设置</h1>
+            <h1>设置</h1><button class="secondary" on:click={openImport}>数据导入中心</button>
           </div>
           <section class="panel settings-panel">
+            <div class="preference-row appearance"><strong>外观主题</strong><div class="segmented" role="group" aria-label="外观主题">
+              {#each Object.entries(themeNames) as [value, title]}<button aria-pressed={$themePreference === value} on:click={() => setTheme(value as Preference)}>{title}</button>{/each}
+            </div></div>
             {#if isWindows}<div class="section-heading"><h2>打开与锁定</h2></div>
             <div class="preference-row"><strong>记住这台电脑</strong><button class="preference-switch" class:enabled={deviceUnlockEnabled} role="switch" aria-checked={deviceUnlockEnabled} aria-label="记住这台电脑" on:click={toggleDeviceUnlock} disabled={busy || !isTauri}><span></span></button></div>
             <div class="preference-row"><strong>锁定 / 解锁</strong><kbd>Ctrl Shift L</kbd></div>{:else}<div class="section-heading"><h2>记忆库</h2></div><button class="secondary" on:click={lock}>锁定</button>{/if}
@@ -1659,7 +1785,7 @@
           </section>{/if}
           {#if !isMobile}<section class="panel settings-panel">
             <h2>快捷记录</h2>
-            <div class="shortcut-list">
+            <div class="shortcut-list"><div><kbd>Ctrl / ⌘ K</kbd><span>打开命令面板</span></div>
               <div>
                 <kbd>Ctrl / ⌘ Shift Space</kbd><span>唤起快速输入</span>
               </div>
@@ -1683,7 +1809,7 @@
             {/if}
           </section>{/if}
           <section class="panel settings-panel">
-            <h2>记忆与备份</h2>
+            <h2 id="backup-settings">记忆与备份</h2>
             <div class="button-row">
               <button class="secondary" on:click={backup} disabled={!isPersistent}
                 >导出加密备份</button
@@ -1763,5 +1889,6 @@
     </dialog>
   {/if}
 {/if}
-{#if mode === "ready" && editorOpen}<ManualEditor {snapshot} entity={editedEntity} saved={recordSaved} close={() => editorOpen = false} />{/if}
+{#if mode === "ready" && importTab}<ImportCenter {snapshot} tab={importTab} close={()=>importTab=null} save={saveLocal}/>{/if}
+{#if mode === "ready" && editorOpen}<ManualEditor {snapshot} initial={draftEntity} showRelations={relationEditor} entity={editedEntity} saved={recordSaved} close={() => editorOpen = false} />{/if}
 {#if mode === "ready" && connectionsOpen}<ConnectionReview {snapshot} saved={value=>{snapshot=value;connectionsOpen=false;flash("已补全关联");}} close={()=>connectionsOpen=false}/>{/if}

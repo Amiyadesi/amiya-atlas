@@ -1,4 +1,11 @@
 <script lang="ts">
+  import {tick} from "svelte";
+  import QuickEntry from "./QuickEntry.svelte";
+  import ReviewCharts from "./ReviewCharts.svelte";
+  import TransactionDrawer from "./TransactionDrawer.svelte";
+  import {frequentEntries,groupLedgerRows,viewportLines,budgetPercent} from "../../domain/ledger-view";
+  import {privateEntity} from "../../domain/importers/assets";
+  import { confirmDialog } from "../../lib/dialog";
   import type { Entity, VaultSnapshot } from "../../lib/types";
   import { newId, nowIso } from "../../lib/types";
   import { saveSnapshot } from "../../lib/api";
@@ -26,7 +33,6 @@
   } from "../../domain/ledger";
   import {
     emptyProposal,
-    localLedgerProposal,
     legacyCosts,
     applyFinanceActions,
     expenseCategory,
@@ -44,7 +50,7 @@
   import type { Proposal } from "../../domain/proposal";
   import InvestmentPanel from "./InvestmentPanel.svelte";
   import MoneyGraph from "./MoneyGraph.svelte";
-  import { parseFinance, parseFinanceQuery } from "../../ai/finance";
+  import { parseFinanceQuery } from "../../ai/finance";
   import type { ProviderConfig } from "../../ai/provider";
   import {
     queryReport,
@@ -56,6 +62,11 @@
   export let saved: (next: VaultSnapshot) => void;
   export let stage: (raw: string, proposal: Proposal) => Promise<void>;
   export let edit: (entity?: Entity) => void;
+  export let quickSave:(next:VaultSnapshot,ids:string[])=>Promise<void>;
+  export let openImport:()=>void,subscription:(entity:Entity)=>void,notify:(message:string)=>void;
+  let amountInput:HTMLInputElement, investment:InvestmentPanel,scrollList:HTMLDivElement;
+  function resetScroll(){scrollTop=0;if(scrollList)scrollList.scrollTop=0;}
+  $: presets=frequentEntries(snapshot);
   export let download: (filename: string, payload: string) => Promise<void>;
   let tab = "流水",
     month = dateToday().slice(0, 7),
@@ -65,8 +76,7 @@
     scrollTop = 0,
     form = "",
     busy = false,
-    error = "",
-    sentence = "";
+    error = "";
   let kind: Transaction["kind"] = "SPEND",
     amount = "",
     asset = "CNY",
@@ -142,34 +152,36 @@
     (e) => e.category === "Order" && e.privacy !== "SECRET",
   );
   $: balances = accountBalances(snapshot);
-  $: from = week
+  $: from = week && tab==="回顾"
     ? new Date(Date.now() - 6 * 86400000).toLocaleDateString("sv-SE")
     : `${month}-01`;
-  $: to = week ? dateToday() : monthEnd(month);
+  $: to = week && tab==="回顾" ? dateToday() : monthEnd(month);
   $: report = periodReport(snapshot, from, to);
+  $: monthReport = week ? periodReport(snapshot,month+"-01",monthEnd(month)) : report;
   $: commercialReports = report.projects.filter((p) =>
     snapshot.entities.some((e) => e.id === p.id && isCommercialProject(e)),
   );
   $: costs = monthlyCosts(snapshot, `${month}-01`);
   $: expected = expectedPayments(snapshot, month);
   $: legacy = legacyCosts(snapshot);
+  $: accountNames=new Map(accounts.map(a=>[a.id,a.name]));
   $: rows = report.transactions
     .filter(
       (t) =>
         t.privacy !== "SECRET" &&
         (!accountFilter || t.legs.some((l) => l.accountId === accountFilter)) &&
         (!projectFilter || t.legs.some((l) => l.projectId === projectFilter)) &&
-        `${t.note ?? ""} ${t.payee ?? ""} ${t.legs.map((l) => accounts.find((a) => a.id === l.accountId)?.name).join(" ")}`
+        (!search || `${t.note ?? ""} ${t.payee ?? ""} ${t.legs.map((l) => accountNames.get(l.accountId)).join(" ")}`
           .toLowerCase()
-          .includes(search.toLowerCase()),
+          .includes(search.toLowerCase())),
     )
     .sort(
       (a, b) =>
-        b.occurredAt.localeCompare(a.occurredAt) ||
+        (b.precision==="month"?b.occurredAt.slice(0,7):b.occurredAt).localeCompare(a.precision==="month"?a.occurredAt.slice(0,7):a.occurredAt) ||
         b.createdAt.localeCompare(a.createdAt),
     );
-  $: start = Math.max(0, Math.floor(scrollTop / 76) - 4);
-  $: visible = rows.slice(start, start + 18);
+  $: groups=groupLedgerRows(rows,accounts);
+  $: visible=viewportLines(groups.lines,scrollTop);
   $: reversed = new Set(snapshot.transactions?.map((t) => t.reversalOf));
   const list = (values: Money[]) =>
     values.length ? values.map(formatMoney).join(" · ") : "—";
@@ -192,21 +204,8 @@
     EQUITY: "期初与调整",
   };
   function transactionAmount(t: Transaction) {
-    const classified = t.legs.filter((l) =>
-      ["INCOME", "EXPENSE"].includes(
-        accounts.find((a) => a.id === l.accountId)?.kind ?? "",
-      ),
-    );
-    return list(
-      total(
-        (classified.length
-          ? classified
-          : t.legs.filter((l) => units(l.money) > 0n)
-        ).map((l) =>
-          l.money.amount.startsWith("-") ? negate(l.money) : l.money,
-        ),
-      ),
-    );
+    const m=t.legs[0].money;
+    return formatMoney(units(m)<0n?negate(m):m);
   }
   async function run(fn: () => Promise<void>) {
     if (busy) return;
@@ -225,7 +224,7 @@
     saved(await saveSnapshot(next));
     form = "";
   }
-  async function submit() {
+  async function submit(again:boolean) {
     await run(async () => {
       if (kind === "TRANSFER" && (!accountId.trim() || !counterId.trim()))
         throw new Error("请选择或填写转出和转入账户");
@@ -289,7 +288,7 @@
             r.accountId === account.id &&
             r.date >= date,
         ) &&
-        !window.confirm("这笔记录早于已对账日期，仍然入账？")
+        !await confirmDialog({title: "仍然入账？", description: "这笔记录早于已对账日期。", confirmLabel: "确认入账"})
       )
         return;
       const next = applyFinanceActions(snapshot, [
@@ -297,7 +296,9 @@
         { type: "ledger.add", transaction: t, evidence: note || "手动记账" },
       ]);
       await persist(next);
-      form = "";
+      form = again?"entry":"";
+      accountId=account.id; counterId=counter.id;
+      notify("已保存流水");
       amount = "";
       note = "";
       payee = "";
@@ -305,6 +306,7 @@
       resourceId = "";
       orderId = "";
       fee = "";
+      if(again){await tick();amountInput.focus();}
     });
   }
   async function setCommercial(project: Entity, enabled: boolean) {
@@ -383,9 +385,7 @@
       );
       if (
         result.transaction &&
-        !window.confirm(
-          `差额 ${formatMoney(result.transaction.legs[0].money)}，记为调整？`,
-        )
+        !await confirmDialog({title: "记录对账调整？", description: `差额 ${formatMoney(result.transaction.legs[0].money)}，记为调整？`, confirmLabel: "记为调整"})
       )
         return;
       next.transactions = [
@@ -456,24 +456,30 @@
       await persist(next);
     });
   }
-  async function parseSentence(useModel = false) {
-    await run(async () => {
-      const p = useModel
-        ? await parseFinance(config, sentence, snapshot)
-        : localLedgerProposal(sentence, snapshot);
-      if (!p) throw new Error("写一句收支，例如：午餐22.5，打车14.7");
-      await stage(sentence, p);
-      sentence = "";
-    });
+  export function showTab(value:string){tab=value;week=false;form="";entryId="";}
+  async function repeat(t:Transaction) {
+    entryId="";date=dateToday();asset=t.legs[0].money.asset;accountId=t.legs[0].accountId;
+    if(t.kind==="TRADE"){tab="投资";await tick();investment.repeatTrade(t);return;}
+    if(t.kind==="ADJUST"){tab="账户";form="reconcile";actual="";reason=t.note??"";return;}
+    kind=t.kind;amount=t.legs[0].money.amount.replace(/^-/,"");counterId=t.legs[1].accountId;
+    note=t.note??"";payee=t.payee??"";projectId=t.legs[1].projectId??"";resourceId=t.legs[1].resourceId??"";orderId=t.refs?.orderId??"";
+    const charge=t.legs.slice(2).find(l=>accounts.find(a=>a.id===l.accountId)?.kind==="EXPENSE");
+    fee=charge?.money.amount??"";feeAccountId=charge?.accountId??"";form="entry";await tick();amountInput.focus();
+  }
+  function toSubscription(t:Transaction){
+    entryId="";subscription(privateEntity("Subscription",t.payee||t.note||accountLabel(t.legs[1].accountId),{fee:money(t.legs[0].money.amount.replace(/^-/,""),t.legs[0].money.asset),billing_period:"monthly"}));
   }
   async function csv() {
-    if (!window.confirm("导出明文 CSV？文件包含本页流水的金额、账户和备注。"))
+    if (!await confirmDialog({title: "导出明文 CSV？", description: "文件未经加密，包含本页流水的金额、账户和备注。", danger: true, confirmLabel: "导出 CSV"}))
       return;
     await run(() =>
       download(`Relakeep-${month}.csv`, ledgerCsv(snapshot, rows)),
     );
   }
-  function openEntry() {
+  export function showAccount(id: string) {
+    tab = "流水"; form = ""; week = false; accountFilter = id; projectFilter = ""; search = ""; scrollTop = 0; entryId = "";
+  }
+  export function openEntry() {
     form = "entry";
     const last = [...(snapshot.transactions ?? [])]
       .reverse()
@@ -497,9 +503,9 @@
         ><span class="sr-only">月份</span><input
           type="month"
           bind:value={month}
-          on:change={() => (scrollTop = 0)}
+          on:change={resetScroll}
         /></label
-      ><button class="primary" on:click={openEntry}>记一笔</button>
+      ><button class="secondary" on:click={openImport}>导入账单</button><button class="primary" on:click={openEntry}>记一笔</button>
     </div>
   </header>
   <nav class="ledger-tabs" aria-label="账本视图">
@@ -512,9 +518,10 @@
       >{/each}
   </nav>
   {#if error}<p class="error" role="alert">{error}</p>{/if}
+  {#if tab === "流水"}<QuickEntry {snapshot} {config} {stage} save={quickSave}/>{/if}
   {#if form === "entry"}<form
       class="ledger-form"
-      on:submit|preventDefault={submit}
+      on:submit|preventDefault={e=>submit(e.submitter?.getAttribute("value")==="again")}
     >
       <div class="section-heading">
         <h2>记一笔</h2>
@@ -522,6 +529,7 @@
           >关闭</button
         >
       </div>
+      {#if presets.length}<div class="entry-presets" aria-label="常用组合">{#each presets as p}<button type="button" class="secondary" on:click={()=>{kind=p.kind;asset=p.asset;accountId=p.account.id;counterId=p.counter.id;fee="";orderId="";}}>{p.counter.name} · {p.account.name} · {kindLabel(p.kind)}</button>{/each}</div>{/if}
       <div class="entry-kinds">
         {#each [["SPEND", "支出"], ["INCOME", "收入"], ["TRANSFER", "转账"], ["OPENING", "期初余额"]] as [value, label]}<button
             type="button"
@@ -538,6 +546,7 @@
         <label
           ><span class="sr-only">金额</span><input
             aria-label="金额"
+            bind:this={amountInput}
             bind:value={amount}
             required
             inputmode="decimal"
@@ -645,8 +654,8 @@
         </div>
       </details>
       <button class="primary" disabled={busy}
-        >{busy ? "保存中…" : "保存"}</button
-      >
+        >{busy ? "保存中…" : "保存"}</button>
+      <button type="submit" value="again" class="secondary" disabled={busy}>保存并再记一笔</button>
     </form>{/if}
   {#if form === "account"}<form
       class="ledger-form"
@@ -718,43 +727,25 @@
       <div><span>本月收入</span><strong>{list(report.income)}</strong></div>
       <div><span>固定月成本</span><strong>{list(costs.totals)}</strong></div>
     </div>
-    <details class="sentence-disclosure">
-      <summary>一句话记账</summary>
-      <form
-        class="sentence-entry"
-        on:submit|preventDefault={() => parseSentence()}
-      >
-        <input
-          aria-label="一句话记账"
-          bind:value={sentence}
-          placeholder="今天花了八块，现金付的"
-          required
-        /><button class="secondary" disabled={busy}>预览</button><button
-          type="button"
-          class="text-button"
-          disabled={busy || !sentence.trim()}
-          on:click={() => parseSentence(true)}>AI 整理</button
-        >
-      </form>
-    </details>
+
     <div class="ledger-filters">
       <input
         type="search"
         aria-label="搜索流水"
         bind:value={search}
         placeholder="搜索流水"
-        on:input={() => (scrollTop = 0)}
+        on:input={resetScroll}
       /><select
         bind:value={accountFilter}
         aria-label="账户筛选"
-        on:change={() => (scrollTop = 0)}
+        on:change={resetScroll}
         ><option value="">全部账户</option>{#each accounts as a}<option
             value={a.id}>{a.name}</option
           >{/each}</select
       ><select
         bind:value={projectFilter}
         aria-label="项目筛选"
-        on:change={() => (scrollTop = 0)}
+        on:change={resetScroll}
         ><option value="">全部项目</option>{#each projects as p}<option
             value={p.id}>{p.name}</option
           >{/each}</select
@@ -762,67 +753,27 @@
     </div>
     <!-- svelte-ignore a11y_no_noninteractive_tabindex (Scrollable region needs keyboard focus.) -->
     <div
-      class="ledger-scroll"
+      class="ledger-scroll" bind:this={scrollList}
       on:scroll={(e) => (scrollTop = e.currentTarget.scrollTop)}
       role="region"
       aria-label="流水列表"
       tabindex="0"
     >
-      <div style:height={`${rows.length * 76}px`} style:position="relative">
-        <div style:transform={`translateY(${start * 76}px)`}>
-          {#each visible as t, i (t.id)}<div class="transaction-row">
-              <time
-                >{start + i === 0 ||
-                rows[start + i - 1]?.occurredAt !== t.occurredAt
-                  ? t.precision === "month"
-                    ? t.occurredAt.slice(0, 7)
-                    : t.occurredAt.slice(5)
-                  : ""}</time
-              ><button
-                class="transaction-title"
-                on:click={() => (entryId = entryId === t.id ? "" : t.id)}
-                ><strong>{t.note || t.payee || kindLabel(t.kind)}</strong><small
-                  >{t.reversalOf ? "冲正" : kindLabel(t.kind)} · {accountLabel(
-                    t.legs[0].accountId,
-                  )}{#if snapshot.financeRecords?.some((r) => r.type === "reconciliation" && r.date >= t.occurredAt && r.createdAt < t.createdAt)}
-                    · 回溯{/if}</small
-                ></button
-              ><strong class="numeric">{transactionAmount(t)}</strong><button
-                class="text-button"
-                disabled={busy || !!t.reversalOf || reversed.has(t.id)}
-                on:click={() => reverse(t)}
-                >{reversed.has(t.id) ? "已冲正" : "冲正"}</button
-              >
-            </div>{/each}
-        </div>
+      <div style:height={groups.height+"px"} style:position="relative">
+        {#each visible as line (line.type==="day"?"day:"+line.day:line.tx.id)}
+          {#if line.type==="day"}<div class="day-header" style:top={line.top+"px"}><strong>{line.day}</strong><span class="expense">支 {list(line.expense)}</span><span class="income">收 {list(line.income)}</span></div>
+          {:else}{@const t=line.tx}{@const inflow=units(t.legs[0].money)>0n}
+            <button class="transaction-row" style:top={line.top+"px"} on:click={()=>entryId=t.id}>
+              <span class="transaction-title"><strong>{t.note||t.payee||kindLabel(t.kind)}</strong><small>{t.reversalOf?"冲正 · ":""}{kindLabel(t.kind)} · {accountLabel(t.legs[0].accountId)}{#if snapshot.financeRecords?.some(r=>r.type==="reconciliation"&&r.accountId===t.legs[0].accountId&&r.date>=t.occurredAt&&r.createdAt<t.createdAt)} · 回溯{/if}</small></span>
+              <span class="category">{accountLabel(t.legs[1].accountId)}</span>
+              <strong class="numeric" class:income={t.kind==="INCOME"} class:expense={t.kind==="SPEND"} class:transfer={t.kind==="TRANSFER"}>{t.kind==="TRANSFER"?"↔ ":inflow?"+":"−"}{transactionAmount(t)}</strong>
+            </button>
+          {/if}
+        {/each}
       </div>
       {#if !rows.length}<div class="empty-state">这个月还没有流水</div>{/if}
     </div>
-    {#if entryId}{@const entry = rows.find(
-        (t) => t.id === entryId,
-      )}{#if entry}<div class="ledger-form">
-          <h3>{entry.note || kindLabel(entry.kind)}</h3>
-          <p>{entry.occurredAt} · {entry.payee ?? ""}</p>
-          {#if showEntries}{#each entry.legs as leg}<div class="report-row">
-                <span>{accountLabel(leg.accountId)}</span><strong
-                  >{formatMoney(leg.money)}</strong
-                >
-              </div>{/each}{:else}<p>
-              {accountLabel(entry.legs[0].accountId)} · {transactionAmount(
-                entry,
-              )}
-            </p>{/if}
-          <div class="button-row">
-            <button
-              class="secondary"
-              disabled={busy || !!entry.reversalOf || reversed.has(entry.id)}
-              on:click={() => reverse(entry)}
-              >{reversed.has(entry.id) ? "已冲正" : "冲正"}</button
-            ><button class="text-button" on:click={() => (entryId = "")}
-              >收起</button
-            >
-          </div>
-        </div>{/if}{/if}
+    {#if entryId}{@const entry=rows.find(t=>t.id===entryId)}{#if entry}<TransactionDrawer {entry} {accountLabel} {kindLabel} amount={transactionAmount(entry)} {showEntries} reversed={reversed.has(entry.id)} {busy} close={()=>entryId=""} repeat={()=>repeat(entry)} subscribe={()=>toSubscription(entry)} reverse={()=>reverse(entry)}/>{/if}{/if}
   {:else if tab === "资源成本"}
     <div class="section-heading">
       <h2>{list(costs.totals)}<small> / 月</small></h2>
@@ -1073,6 +1024,7 @@
         >
       </div>
     </div>
+    {#if month}<ReviewCharts {snapshot} {month}/>{/if}
     {#if form === "budget"}<form
         class="ledger-form"
         on:submit|preventDefault={saveBudget}
@@ -1100,24 +1052,17 @@
         <button class="primary" disabled={busy}>保存</button>
       </form>{/if}
     {#each snapshot.financeRecords?.filter((r) => r.type === "budget" && r.month === month) ?? [] as b}{#if b.type === "budget"}{@const p =
-          report.projects.find((p) => p.id === b.projectId)}{@const spent =
+          monthReport.projects.find((p) => p.id === b.projectId)}{@const spent =
           total(
             b.projectId
               ? [...(p?.direct ?? []), ...(p?.allocated ?? [])]
-              : report.expense,
+              : monthReport.expense,
           ).find((m) => m.asset === b.value.asset) ?? money("0", b.value.asset)}
-        <div class="report-row">
-          <span
-            >{projects.find((p) => p.id === b.projectId)?.name ??
-              "全部"}预算</span
-          ><span>{formatMoney(spent)} / {formatMoney(b.value)}</span><strong
-            >{units(spent) > units(b.value) ? "超出" : "剩余"}
-            {formatMoney(
-              units(spent) > units(b.value)
-                ? subtract(spent, b.value)
-                : subtract(b.value, spent),
-            )}</strong
-          >
+        {@const percent=budgetPercent(spent,b.value)}
+        <div class="budget-row" class:over={units(spent)>units(b.value)} class:warn={percent>=80 && percent<=100}>
+          <div><strong>{projects.find(p=>p.id===b.projectId)?.name??"全部"}预算</strong><span>{formatMoney(spent)} / {formatMoney(b.value)}</span></div>
+          <div class="budget-track"><i style:width={Math.min(100,Math.max(0,percent))+"%"}></i></div>
+          <div><b>{Number.isFinite(percent)?percent+"%":"超出零预算"}</b><small>{units(spent)>units(b.value)?"超出":"剩余"} {formatMoney(units(spent)>units(b.value)?subtract(spent,b.value):subtract(b.value,spent))}</small></div>
         </div>{/if}{/each}
     <MoneyGraph
       {snapshot}
@@ -1135,7 +1080,7 @@
             >差额 {formatMoney(row.difference)}</strong
           >{/if}
       </div>{/each}
-  {:else if tab === "投资"}<InvestmentPanel
+  {:else if tab === "投资"}<InvestmentPanel bind:this={investment}
       {snapshot}
       {stage}
       saved={async (next) => {
@@ -1303,8 +1248,7 @@
   .entry-more {
     margin: 14px 0 24px;
   }
-  .entry-more summary,
-  .sentence-disclosure summary {
+  .entry-more summary {
     cursor: pointer;
     font-size: 13px;
     color: var(--muted);
@@ -1313,9 +1257,13 @@
   .entry-more[open] summary {
     margin-bottom: 12px;
   }
-  .sentence-disclosure {
-    margin: 12px 0;
-  }
+  .entry-presets{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}.entry-presets button{font-size:12px}
+  .day-header,.transaction-row{position:absolute;left:0;right:0;width:100%;box-sizing:border-box}
+  .day-header{height:38px;display:flex;align-items:center;gap:12px;background:var(--surface-raised);border-bottom:1px solid var(--border);padding:0 10px;font-size:12px;font-variant-numeric:tabular-nums}.day-header strong{margin-right:auto}
+  .income{color:var(--income)}.expense{color:var(--expense)}.transfer{color:var(--info)}
+  .category{background:var(--accent-soft);color:var(--accent);font-size:12px;padding:2px 7px;border-radius:5px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .budget-row{--bar:var(--accent);margin:15px 0;padding:16px;background:var(--surface);border:1px solid var(--border);border-radius:10px;font-variant-numeric:tabular-nums}.budget-row.warn{--bar:var(--warning)}.budget-row.over{--bar:var(--expense)}.budget-row>div{display:flex;justify-content:space-between;gap:6px;flex-wrap:wrap}.budget-track{height:7px;background:var(--surface-raised);margin:10px 0;border-radius:8px;overflow:hidden}.budget-track i{background:var(--bar);height:100%}.budget-row small{background:var(--surface-raised);color:var(--bar);border-radius:5px;padding:0 6px}.budget-row b{color:var(--bar)}
+
   .ledger-tabs {
     display: flex;
     gap: 1.6rem;
@@ -1391,17 +1339,15 @@
     border-block: 1px solid var(--border);
   }
   .transaction-row {
-    height: 76px;
+    height: 64px;
     display: grid;
-    grid-template-columns: 56px minmax(100px, 1fr) auto 60px;
+    text-align:left;background:var(--surface);padding:0 10px;
+    grid-template-columns: minmax(0, 1fr) auto auto;
     gap: 1rem;
     align-items: center;
     border-bottom: 1px solid var(--border);
   }
-  time {
-    font-size: 0.8rem;
-    color: var(--muted);
-  }
+  .transaction-row:hover { background:var(--surface-raised); }
   .transaction-title {
     min-width: 0;
     text-align: left;
@@ -1476,10 +1422,10 @@
       font-size: 1.05rem;
     }
     .transaction-row {
-      grid-template-columns: 40px minmax(0, 1fr) auto;
+      grid-template-columns: minmax(0, 1fr) auto;
       gap: 0.5rem;
     }
-    .transaction-row > .text-button {
+    .transaction-row > .category {
       display: none;
     }
     .report-row,

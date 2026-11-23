@@ -1,12 +1,30 @@
 <script lang="ts">
   import ProductPreview from "$lib/ProductPreview.svelte";
+  import SiteIcon from "$lib/SiteIcon.svelte";
   import "$lib/site.css";
+  import { onMount } from "svelte";
   import { afterNavigate } from "$app/navigation";
   import { auth, api, type Balance, type Features } from "$lib/client";
   let { data } = $props<{ data: { page: string; en: boolean } }>();
   const t = (zh: string, en: string) => (data.en ? en : zh);
   const href = (page = "") =>
     `${data.en ? "/en" : ""}/${page}`.replace(/\/$/, "") || "/";
+  const themeCycle = { system: "light", light: "dark", dark: "system" } as const;
+  type Theme = keyof typeof themeCycle;
+  let theme = $state<Theme>("system");
+  const themeName = (mode: Theme) => ({ system: t("跟随系统", "System"), light: t("浅色", "Light"), dark: t("暗色", "Dark") })[mode];
+  let themeLabel = $derived(t(`主题：${themeName(theme)}。切换为${themeName(themeCycle[theme])}`, `Theme: ${themeName(theme)}. Switch to ${themeName(themeCycle[theme])}`));
+  onMount(() => {
+    const value = document.documentElement.dataset.theme;
+    if (value === "light" || value === "dark") theme = value;
+  });
+  function cycleTheme() {
+    theme = themeCycle[theme];
+    document.documentElement.dataset.theme = theme;
+    try {
+      localStorage.setItem("relakeep:web-theme", theme);
+    } catch { /* Keep the choice for this visit when storage is unavailable. */ }
+  }
   let features = $state<Features | null>(null);
   let user = $state<{ id: string; email: string; name: string } | null>(null);
   let linkedProviders = $state<string[]>([]);
@@ -38,8 +56,8 @@
   const title = () =>
     ({
       home: t(
-        "记住资产，也记住它们的关系",
-        "Remember what you own. And how it connects.",
+        "理清资产关联与日常收支",
+        "Connected assets and everyday bookkeeping",
       ),
       pricing: t("价格", "Pricing"),
       download: t("下载络笺", "Download Relakeep"),
@@ -199,6 +217,7 @@
     });
   }
   afterNavigate(() => {
+    document.documentElement.lang = data.en ? "en" : "zh-CN";
     const params = new URLSearchParams(window.location.search);
     const destination = params.get("next");
     next =
@@ -219,8 +238,8 @@
   <meta
     name="description"
     content={t(
-      "络笺 Relakeep：本地加密的个人数字资产与关系管理。账号、邮箱、电话卡、订阅和付款卡，连在一起记。",
-      "Relakeep is a local encrypted memory for your digital assets and their relationships. Accounts, email, SIMs, subscriptions and payment cards, connected.",
+      "络笺将账号、订阅和复式账本放进一个本地加密库。从现有文件导入，在三维关系图和金钱图谱中查看资产、成本与项目损益。",
+      "Keep accounts, subscriptions and a double-entry ledger in one encrypted local vault. Import existing records and explore asset relationships, costs and project P&L.",
     )}
   />
   <link
@@ -250,13 +269,12 @@
     )}
   />
   <meta name="twitter:image" content="https://atlas.sayori.org/og-image.svg" />
-  <meta name="theme-color" content="#f7f6fb" />
 </svelte:head>
 
 <a class="skip" href="#main">{t("跳到正文", "Skip to content")}</a>
 <header class="site-header">
   <a class="brand" href={href()} aria-label="Relakeep"
-      ><img src="/mark.svg?v=0.3.1" alt="" width="31" height="31" /><span
+      ><img src="/mark.svg" alt="" width="31" height="31" /><span
       >络笺<span class="brand-en">Relakeep</span></span
     ></a
   >
@@ -270,8 +288,13 @@
     <a class:current={data.page === "account"} href={href("account")}
       >{t("账户", "Account")}</a
     >
+  </nav>
+  <div class="header-tools">
+    <button class="theme-toggle" aria-label={themeLabel} title={themeLabel} onclick={cycleTheme}><SiteIcon name={theme} size={17}/></button>
     <a
       class="locale"
+      aria-label={t("切换至英文", "Switch to Chinese")}
+      hreflang={data.en ? "zh-CN" : "en"}
       href={(data.en ? "" : "/en") +
         "/" +
         (data.page === "home" ? "" : data.page)}
@@ -286,34 +309,40 @@
     <a class="button small" href={href("download")}
       >{t("下载", "Download")} <span aria-hidden="true">↓</span></a
     >
-  </nav>
+  </div>
 </header>
 <main id="main">
   {#if data.page === "home"}
     <section class="hero wrap">
       <div class="hero-copy">
-        <h1>{t("那些账号，", "All those accounts.")}<br />{t("终于对上号。", "Finally connected.")}</h1>
-        <p class="lead">{t("哪个邮箱注册的？绑了哪个号码？又是哪张卡在续费？络笺记下你的数字资产，也留好它们之间的线索。", "Which email signed you up? Which number recovers it? Which card keeps paying? Keep your digital assets and the connections you tend to forget.")}</p>
-        <div class="actions"><a class="button" href={href("download")}><svg viewBox="0 0 24 24" width="17" height="17" fill="currentColor" aria-hidden="true"><path d="m3 5 8-1v7H3zm10-1 8-1v8h-8zM3 13h8v7l-8-1zm10 0h8v8l-8-1z"/></svg>{t("下载 Windows 版", "Download for Windows")}</a><a class="text-link" href="#how">{t("看看怎么记", "See how it works")}</a></div>
-        <div class="hero-footnote"><span class="local-dot" aria-hidden="true"></span>{t("留在本机。免费使用。无需注册。", "On your computer. Free. No account needed.")}</div>
+        <div class="release-line"><a href={href("download")}>v0.9.3</a><span>{t("本地加密工作区", "Local-first workspace")}</span></div>
+        <h1>{t("资产有来路，", "Follow the links.")}<br />{t("花销有去处。", "Track the costs.")}</h1>
+        <p class="lead">{t("哪个账号在续费？钱从哪张卡出，又花在哪个项目上？络笺把数字资产和复式账本放进同一个本地加密库。", "Which account renews? Which card pays? Which project picks up the bill? Keep your digital assets and double-entry books together in one encrypted local vault.")}</p>
+        <div class="actions">
+          <a class="button" href={href("download")}><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="m3 5 8-1v7H3zm10-1 8-1v8h-8zM3 13h8v7l-8-1zm10 0h8v8l-8-1z"/></svg>{t("下载 Windows 版", "Download for Windows")}</a>
+          <a class="text-link" href="#how">{t("看看怎么用", "See how it works")} →</a>
+        </div>
+        <div class="hero-footnote"><SiteIcon name="lock" size={14}/>{t("本地使用免费，无需注册。", "Free to use locally. No sign-up.")}</div>
       </div>
       <ProductPreview en={data.en} />
     </section>
-    <section class="capture-story wrap" id="how">
-      <div class="story-copy"><h2>{t("想到什么，", "As it happens,")}<br />{t("就记一句。", "just say it.")}</h2><p>{t("新开了一张卡，停用一个号码，给订阅换了付款方式。用自己的话记下来，整理成变更，再由你确认。", "A new card, a retired SIM, a different payment method. Describe it in your own words, review the suggested changes and decide what to keep.")}</p><a class="text-link" href={href("guide")}>{t("打开使用教程", "Read the guide")}</a></div>
-      <div class="capture-paper">
-        <div class="paper-heading"><span>{t("刚刚记下", "Just captured")}</span><span>{t("原话", "Your words")}</span></div>
-        <blockquote>{t("“今天给 Google One 换了付款卡，用尾号 1234 的那张。下次续费前提醒我。”", '“Switched Google One to the card ending in 1234. Remind me before the next renewal.”')}</blockquote>
-        <div class="paper-changes"><div><span class="change-symbol">↔</span><span>{t("更新付款关联", "Update payment connection")}</span><strong>Google One <span aria-hidden="true">—</span> •••• 1234</strong></div><div><span class="change-symbol">◷</span><span>{t("加入续费提醒", "Add a renewal reminder")}</span><strong>{t("日期待补充", "Date pending")}</strong></div></div>
-        <div class="paper-footer">
-          <span class="paper-diff-tags">{t("支持 ＋新增 · 修改 · －删除 差异预览", "Preview +Add · Modify · −Remove diffs")}</span>
-          <span class="paper-confirm-badge">{t("✓ 由你确认后才写入本地库", "✓ Saved only after you confirm")}</span>
-        </div>
+    <section class="workflow wrap" id="how">
+      <h2>{t("从已有的记录开始", "Start with the records you have")}</h2>
+      <div class="workflow-grid">
+        <article><SiteIcon name="import" size={23}/><h3>{t("导入账号，不导入密码", "Bring accounts, not passwords")}</h3>
+          <p>{t("在本地读取 Bitwarden 或浏览器导出文件，让邮箱和账号自动连线。导入微信、支付宝账单时，先看重复流水和可能的订阅，再决定保留哪些。", "Import a Bitwarden or browser export locally to link email addresses to accounts. Bring in WeChat or Alipay bills, review duplicates and choose which subscriptions to keep.")}</p>
+          <a class="text-link" href={href("guide") + "#import"}>{t("支持的导入格式", "Supported imports")} →</a></article>
+        <article><SiteIcon name="ledger" size={23}/><h3>{t("一句话，记一笔", "One line to book lunch")}</h3>
+          <p>{t("输入「午饭 22.5 微信」，核对后就能入账。不用先建账户。按天回看收支，月底核对预算；投资持仓则单独查看数量、成本和已实现盈亏。", "Enter lunch, the amount and the wallet you paid from. Review and book it without setting up accounts first. Track spending by day, check your budget and review investment positions and realized gains separately.")}</p>
+          <a class="text-link" href={href("guide") + "#bookkeeping"}>{t("打开账本教程", "Book your first entry")} →</a></article>
+        <article><SiteIcon name="connections" size={23}/><h3>{t("顺着月费找到项目", "Trace a fee to its project")}</h3>
+          <p>{t("在三维关系图里找到账号、订阅和付款卡。切换金钱图谱，从固定成本一路看到项目分摊，分清一项业务的收入、直接成本与损益。", "Explore accounts, subscriptions and cards in the 3D relationship graph. Switch to the money graph to follow fixed costs into projects and see what each one earned after direct and allocated costs.")}</p>
+          <a class="text-link" href={href("guide") + "#graphs"}>{t("查看图谱教程", "Explore the two graphs")} →</a></article>
       </div>
     </section>
-    <section class="ownership wrap">
-      <div class="folder-illustration" aria-hidden="true"><svg viewBox="0 0 330 280" fill="none"><path d="M43 78V52a9 9 0 0 1 9-9h77l21 23h121a12 12 0 0 1 12 12v157H43z" fill="#d9d3f1" stroke="#b8addc" stroke-width="1.5"/><path d="m83 33 147 9-12 183-147-9z" fill="#fff" stroke="#c3bcd7"/><path d="m107 24 133 34-42 167-133-34z" fill="#f7f5fb" stroke="#c3bcd7"/><path d="m113 68 75 19m-82 7 111 28m-118-2 81 20" stroke="#d9d2e9" stroke-width="3"/><path d="M34 103h263l-19 142a11 11 0 0 1-11 10H59a11 11 0 0 1-11-10z" fill="#e9e4f5" stroke="#b8addc" stroke-width="1.5"/><rect x="95" y="155" width="136" height="43" rx="4" fill="#fdfcff"/><path d="M120 176h87" stroke="#a194c5" stroke-width="3"/><circle cx="272" cy="229" r="32" fill="#d5e8dc" stroke="#a7cdb5"/><rect x="261" y="225" width="22" height="16" rx="3" stroke="#426952" stroke-width="2"/><path d="M265 225v-7a7 7 0 0 1 14 0v7" stroke="#426952" stroke-width="2"/></svg></div>
-      <div><h2>{t("加密备份", "Encrypted backups")}</h2><p>{t("加密备份可留在本机，也可保存到自己的 GitHub 私密仓库。", "Keep encrypted backups on your computer or in your own private GitHub repository.")}</p><div class="ownership-links"><a class="text-link" href={href("guide") + "#github-backup"}>{t("GitHub 私密备份", "Private GitHub backups")}</a><a class="text-link" href={href("pricing")}>{t("模型与费用", "AI options and pricing")}</a></div></div>
+    <section class="backup-strip wrap"><SiteIcon name="lock" size={22}/>
+      <div><h2>{t("备份也由你保管", "Your backup stays yours")}</h2><p>{t("加密备份可留在本机，也可保存到自己的 GitHub 私密仓库。", "Keep an encrypted backup on your computer or in your own private GitHub repository.")}</p></div>
+      <div><a class="text-link" href={href("guide") + "#github-backup"}>{t("备份教程", "Backup guide")} →</a><a class="text-link" href={href("pricing")}>{t("模型与费用", "AI and pricing")} →</a></div>
     </section>
   {:else if data.page === "pricing"}
     <section class="wrap page-intro">
@@ -419,21 +448,21 @@
     <section class="wrap download-panel">
       <img src="/mark.svg" width="76" height="76" alt="" />
       <div>
-        <h2>0.4.1</h2>
+        <h2>Relakeep 0.9.3</h2>
         <p>Windows 10 / 11 · x64</p>
       </div>
       <a
         class="button"
-        href="/downloads/Relakeep_0.4.1_x64-setup.exe"
+        href="/downloads/Relakeep_0.9.3_x64-setup.exe"
         rel="noopener"
         >{t("下载安装程序", "Download installer")} ↓</a
       >
     </section>
     <section class="wrap platform-downloads">
-      <div><span><strong>Android</strong><small>Android 7+ · arm64</small></span><a class="text-link" href="/downloads/Relakeep_0.4.1_arm64.apk">{t("下载 APK", "Download APK")} ↓</a></div>
-      <div><span><strong>Linux</strong><small>Debian / Ubuntu · x64</small></span><a class="text-link" href="/downloads/Relakeep_0.4.1_amd64.deb">{t("下载 deb", "Download deb")} ↓</a></div>
-      <div><span><strong>{t("Linux 网页版", "Linux web app")}</strong><small>localhost:5011 · x64</small></span><a class="text-link" href="/downloads/Relakeep_0.4.1_linux-web.tar.gz">{t("下载程序", "Download app")} ↓</a></div>
-      <div><span><strong>Docker</strong><small>{t("自己的服务器", "Your own server")}</small></span><a class="text-link" href="/downloads/Relakeep_0.4.1_selfhost.tar.gz">{t("下载部署包", "Download deployment package")} ↓</a></div>
+      <div><span><strong>Android</strong><small>0.9.2 · Android 7+ · arm64</small></span><a class="text-link" href="/downloads/Relakeep_0.9.2_arm64.apk">{t("下载 APK", "Download APK")} ↓</a></div>
+      <div><span><strong>Debian / Ubuntu</strong><small>0.9.2 · amd64</small></span><a class="text-link" href="/downloads/Relakeep_0.9.2_amd64.deb">{t("下载 deb", "Download deb")} ↓</a></div>
+      <div><span><strong>{t("Linux 网页版", "Linux web app")}</strong><small>0.9.3 · x64 · localhost:5011</small></span><a class="text-link" href="/downloads/Relakeep_0.9.3_linux-web.tar.gz">{t("下载程序", "Download app")} ↓</a></div>
+      <div><span><strong>Docker</strong><small>0.9.2 · {t("首次部署到自己的服务器", "First install on your own server")}</small></span><a class="text-link" href="/downloads/Relakeep_0.9.2_selfhost.tar.gz">{t("下载部署包", "Download package")} ↓</a></div>
     </section>
     <section class="wrap two-columns">
       <article>
@@ -450,20 +479,26 @@
       </article>
     </section>
   {:else if data.page === "guide"}
-    <section class="wrap page-intro">
+    <section class="wrap page-intro" id="guide">
       <h1>{title()}</h1>
     </section>
     <div class="wrap guide-layout">
-      <aside>
-        <a href="#install">01 {t("安装与升级", "Install and upgrade")}</a><a
-          href="#capture">02 {t("记下一条", "Capture")}</a
-        ><a href="#models">03 {t("选择模型", "Choose a model")}</a><a
-          href="#backup">04 {t("备份恢复", "Backup and restore")}</a
-        ><a href="#browser">05 {t("浏览器扩展", "Browser extension")}</a><a href="#github-backup">06 {t("GitHub 私密备份", "Private GitHub backup")}</a><a href="#sync">07 {t("多端同步", "Device sync")}</a><a href="#selfhost">08 {t("自建服务器", "Self-hosting")}</a>
+      <aside aria-label={t("教程目录", "Guide contents")}>
+        <a href="#install">{t("安装与升级", "Install and upgrade")}</a>
+        <a href="#capture">{t("记下一条", "Capture")}</a>
+        <a href="#bookkeeping">{t("账本与极速记账", "Bookkeeping & Cost Map")}</a>
+        <a href="#import">{t("从其他软件导入", "Import from Bitwarden & Bills")}</a>
+        <a href="#graphs">{t("三维关系图与金钱图谱", "3D Relationship & Money Graph")}</a>
+        <a href="#models">{t("选择模型", "Choose a model")}</a>
+        <a href="#backup">{t("备份恢复", "Backup and restore")}</a>
+        <a href="#browser">{t("浏览器扩展", "Browser extension")}</a>
+        <a href="#github-backup">{t("GitHub 私密备份", "Private GitHub backup")}</a>
+        <a href="#sync">{t("多端同步", "Device sync")}</a>
+        <a href="#selfhost">{t("自建服务器", "Self-hosting")}</a>
       </aside>
       <div class="prose">
         <section id="install">
-          <h2>01 / {t("安装与升级", "Install and upgrade")}</h2>
+          <h2>{t("安装与升级", "Install and upgrade")}</h2>
           <ol>
             <li>
               {t(
@@ -481,14 +516,14 @@
             <li>{t("应用内按 Ctrl + Shift + L 锁定；启用设备解锁后，在锁定页按同一快捷键打开。", "Press Ctrl + Shift + L in the app to lock. With device unlock enabled, use the same shortcut on the lock screen to open it.")}</li>
             <li>
               {t(
-                "升级前导出加密备份、关闭程序，再安装新版。",
-                "Before upgrading, export an encrypted backup and close the app, then install the new version.",
+                "升级前导出加密备份，关闭程序，再更新所有同步设备。新版写入账本后，不要用 0.4 等旧版打开同一份库。",
+                "Export an encrypted backup and close the app before updating all devices that sync. Once you save new ledger entries, do not reopen that vault in 0.4 or another older version.",
               )}
             </li>
           </ol>
         </section>
         <section id="capture">
-          <h2>02 / {t("记下一条，再看变更", "Capture, then review")}</h2>
+          <h2>{t("记下一条，再看变更", "Capture, then review")}</h2>
           <p>
             {t(
               "在首页输入：“我的 Acme 主账号用 hello@example.invalid 注册，用日本备用号码找回。”点击“整理预览”，检查记忆、属性和关联，再点击保存。",
@@ -496,8 +531,32 @@
             )}
           </p>
         </section>
+        <section id="bookkeeping">
+          <h2>{t("账本与极速记账", "Bookkeeping & Cost Map")}</h2>
+          <p>{t("午饭花了 22.5 元？在首页或账本输入「午饭 22.5 微信」，按 Enter 预览。核对金额、账户和分类，再按 Enter 入账。不必先建账户，也不需要 AI。", "Paid ¥22.50 for lunch? In quick entry on Home or Ledger, try “午饭 22.5 微信” (lunch, 22.5, WeChat). Press Enter to preview, check the amount, account and category, then press Enter to post. No account setup or AI required.")}</p>
+          <ul>
+            <li><strong>{t("连续记账。", "Keep entering. ")}</strong>{t("在「记一笔」选择「保存并再记一笔」，继续填下一笔金额。流水按天分组；点开一笔可查看复式分录。", "In the entry form, choose Save and add another to move to the next amount. Transactions are grouped by day; open one to inspect both sides of the entry.")}</li>
+            <li><strong>{t("预算与对账。", "Check the books. ")}</strong>{t("到「回顾」设置预算、查看本月支出。在「账户 → 对账」填实际余额和差额原因。记错时打开原流水点「冲正」，反向分录会保留原始记录。", "Set a budget in Review and compare it with this month’s spending. Under Accounts → Reconcile, enter the actual balance and explain the difference. To correct an entry, open it and choose Reverse; the original stays in the ledger.")}</li>
+            <li><strong>{t("固定成本与项目损益。", "Map fixed costs. ")}</strong>{t("为订阅填写费用和周期，在「项目 → 分摊成本」指定项目比例。固定费用按币种折算到每月；经营项目的损益会区分直接成本和分摊成本。", "Give a subscription a fee and billing cycle, then assign a share under Projects → Allocate costs. Fixed costs are normalized per month, by currency. Business project P&L separates direct expenses from allocated costs.")}</li>
+          </ul>
+        </section>
+        <section id="import">
+          <h2>{t("从其他软件导入", "Import from Bitwarden & Bills")}</h2>
+          <p>{t("在应用的「设置 → 数据导入中心」选择本地文件，先预览，再确认。官网示例不需要上传文件。", "In the app, open Settings → Data import center and select a local file. Review the preview before confirming. The website demo needs no files.")}</p>
+          <ul>
+            <li><strong>{t("账号。", "Accounts. ")}</strong>{t("选择未加密的 Bitwarden JSON 或 CSV，也支持浏览器、1Password 和 KeePass 导出的 CSV。导入只保留账号等元数据，剔除密码、验证码密钥等敏感字段；邮箱可自动关联多个账号。", "Use an unencrypted Bitwarden JSON or CSV export, or a CSV from your browser, 1Password or KeePass. The importer keeps account metadata, strips passwords and authenticator secrets, and links accounts that share an email address.")}</li>
+            <li><strong>{t("账单。", "Bills. ")}</strong>{t("在「账本 → 导入账单」选择微信、支付宝或通用 CSV；通用表格可自行匹配列。预览中核对收支方向与账户，跳过重复流水。若发现可能的订阅，勾选才会创建订阅资产。", "In Ledger → Import bills, choose a WeChat, Alipay or generic CSV. Map columns for a generic file, check directions and accounts, and skip duplicates. Suggested subscriptions become assets only if you select them.")}</li>
+          </ul>
+          <p class="guide-note"><SiteIcon name="lock" size={16}/>{t("原始导出文件可能含明文密码。仅在可信设备上导出，导入后删除文件。", "The original export can contain plaintext passwords. Export on a trusted device and delete the file after import.")}</p>
+        </section>
+        <section id="graphs">
+          <h2>{t("三维关系图与金钱图谱", "3D Relationship & Money Graph")}</h2>
+          <p><kbd>Ctrl+K</kbd> {t("打开应用的命令面板。输入资产名；用方向键选择，按 Enter 查看，或在资产结果上按 Alt+Enter 在图中定位。", "opens the app’s command palette. Search for an asset, use the arrow keys to select it, then press Enter to open it or Alt+Enter to locate it in the graph.")}</p>
+          <p><strong>{t("看关系。", "Trace relationships. ")}</strong>{t("在「关系图 → 关系」拖动旋转、滚轮缩放，点击球体查看相邻资产。点图例按类别筛选，勾选「隐藏孤立节点」暂时收起没有连线的资产。", "In Graph → Relationships, drag to rotate, scroll to zoom and select a node to inspect its neighbors. Filter by category in the legend, or turn on Hide isolated nodes to remove unconnected assets from view.")}</p>
+          <p><strong>{t("看钱流。", "Follow the money. ")}</strong>{t("切换到「金钱」，先选币种，再沿资源月费的连线查看项目分摊和闲置成本。点节点看关联流水，回到项目损益核对收入与成本。", "Switch to Money and choose a currency. Follow a resource’s monthly fee into project allocations and idle costs. Select a node for related entries, then compare revenue and costs in project P&L.")}</p>
+        </section>
         <section id="models">
-          <h2>03 / {t("选择整理方式", "Choose your AI")}</h2>
+          <h2>{t("选择整理方式", "Choose your AI")}</h2>
           <ul>
             <li>
               {t(
@@ -526,7 +585,7 @@
           </ul>
         </section>
         <section id="backup">
-          <h2>04 / {t("备份与恢复", "Backup and restore")}</h2>
+          <h2>{t("备份与恢复", "Backup and restore")}</h2>
           <p>
             {t(
               "设置 → 记忆与备份 → 导出加密备份，保存到其他磁盘。恢复前先备份当前数据，再选择“恢复备份”，打开备份文件并输入它的主密码。",
@@ -541,7 +600,7 @@
           </p>
         </section>
         <section id="browser">
-          <h2>05 / {t("浏览器扩展", "Browser extension")}</h2>
+          <h2>{t("浏览器扩展", "Browser extension")}</h2>
           <p>
             {t(
               "Windows 安装目录有 extension 文件夹。打开 chrome://extensions 或 edge://extensions，启用开发者模式 → 加载已解压扩展 → 选择 extension。打开并解锁络笺，在网页中点击“加入络笺”，选择登录身份。",
@@ -550,7 +609,7 @@
           </p>
         </section>
         <section id="github-backup">
-          <h2>06 / {t("GitHub 私密备份", "Private GitHub backup")}</h2>
+          <h2>{t("GitHub 私密备份", "Private GitHub backup")}</h2>
           <ol>
             <li><a href="https://github.com/Amiyadesi/relakeep-vault-template/generate" target="_blank" rel="noreferrer">{t("打开备份模板", "Open the backup template")}</a>。{t("创建自己的新仓库，可见性选择 Private，再 clone 到本机。", "Create your own new repository with Private visibility, then clone it.")}</li>
             <li>{t("安装 Git 和 GitHub CLI，执行 gh auth login。", "Install Git and GitHub CLI, then run gh auth login.")}</li>
@@ -561,7 +620,7 @@
           <p>{t("恢复前先备份当前数据。运行 restore.ps1，或下载 vault/latest.atlas-backup.json，在软件里恢复并输入原主密码。", "Back up your current data before restoring. Run restore.ps1 or download vault/latest.atlas-backup.json, then restore it in the app with its master password.")}</p>
         </section>
         <section id="sync">
-          <h2>07 / {t("多端同步", "Device sync")}</h2>
+          <h2>{t("多端同步", "Device sync")}</h2>
           <ol>
             <li>{t("设置 → 同步 → 自建服务器，填写域名或 https://IP:端口，点击“保存并同步”。", "Open Settings → Sync → Your server, enter its domain or https://IP:port and select Save and sync.")}</li>
             <li>{t("在打开的浏览器中登录服务器，核对设备码并允许连接，然后回到软件。", "Sign in to the server in your browser, confirm the device code and return to the app.")}</li>
@@ -572,10 +631,11 @@
           <p>{t("电脑在“设置 → 同步”点击“浏览器打开”，进入 localhost:5011；Linux 独立网页版解压后运行 ./relakeep-web，打开终端给出的链接。", "On a computer, select Open in browser in Sync settings for localhost:5011. For the standalone Linux web app, extract it, run ./relakeep-web and open the link printed in the terminal.")}</p>
         </section>
         <section id="selfhost">
-          <h2>08 / {t("自建服务器", "Self-hosting")}</h2>
+          <h2>{t("自建服务器", "Self-hosting")}</h2>
           <p>{t("下载 Docker 部署包并解压；服务器安装 Node.js 24 和 Docker Compose。域名指向服务器，开放 80/443 端口，然后执行：", "Extract the Docker deployment package. Install Node.js 24 and Docker Compose on your server, point a domain at it, open ports 80/443 and run:")}</p>
           <pre><code>node scripts/init-selfhost.mjs selfhost.env https://atlas.example.com{"\n"}docker compose -f compose.yaml -f compose.https.yaml up -d --build</code></pre>
           <p>{t("打开自己的域名，使用 selfhost.env 中的 RELAKEEP_SETUP_TOKEN 创建登录账户，再创建或导入记忆库。", "Open your domain, create your login account with RELAKEEP_SETUP_TOKEN from selfhost.env, then create or import your vault.")}</p>
+          <p>{t("升级已有部署时，保留原数据卷、selfhost.env、身份密钥与 Compose 项目名，沿用原来的 -p 和 -f 参数重新构建。不要从新目录直接启动或删除旧卷。", "For an existing deployment, keep the data volumes, selfhost.env, identity keys and Compose project name. Rebuild with your original -p and -f options. Do not launch from a new directory or delete the old volumes.")}</p>
           <p>{t("网页“设置 → 服务器登录”可开启验证器两步验证、添加通行密钥、选择是否记录登录环境，以及退出已连接设备。保存好两步验证的恢复码。", "In the web app, open Settings → Server sign-in to enable authenticator 2FA, add passkeys, choose whether to record login environments and revoke devices. Save your 2FA recovery codes.")}</p>
           <p>{t("IP 连接请先配置设备信任的 HTTPS 证书；通行密钥使用 HTTPS 域名。网页版会在自己的服务器解密记忆库。", "For an IP address, configure an HTTPS certificate your devices trust. Use an HTTPS domain for passkeys. The web app decrypts your vault on your own server.")}</p>
           <a class="text-link" href="/downloads/Relakeep_0.4.1_guide.md" download>{t("下载完整部署与备份教程", "Download the deployment and backup guide")} ↓</a>

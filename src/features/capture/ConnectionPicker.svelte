@@ -122,7 +122,7 @@
   }
   button:hover,
   button:focus-visible {
-    background: var(--surface-alt);
+    background: var(--surface-raised);
   }
   small {
     color: var(--muted);

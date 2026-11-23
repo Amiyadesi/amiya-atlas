@@ -12,6 +12,11 @@ export const graphColors: Record<string, string> = {
   项目: "#a7c978",
   其他: "#aab7cc",
 };
+const lightColors: Record<string, string> = {
+  账号: "#5285c9", 通信: "#238d82", 资金: "#b58532", 服务: "#a66ac0",
+  设施: "#cd7765", 项目: "#759647", 其他: "#7a879f",
+};
+export const categoryColors = (theme: "light" | "dark") => theme === "dark" ? graphColors : lightColors;
 export interface GraphNode extends NodeObject {
   id: string;
   entity: Entity;
@@ -30,7 +35,7 @@ export interface GraphLink extends LinkObject<GraphNode> {
 export const endpointId = (value: string | GraphNode) =>
   typeof value === "string" ? value : value.id;
 
-export function graphData(snapshot: VaultSnapshot, types?: string[]) {
+export function graphData(snapshot: VaultSnapshot, types?: string[], hideIsolated = false) {
   const entities = snapshot.entities.filter((e) => e.privacy !== "SECRET");
   const ids = new Set(entities.map((e) => e.id));
   const allRelations = snapshot.relations.filter(
@@ -64,7 +69,9 @@ export function graphData(snapshot: VaultSnapshot, types?: string[]) {
       target: relation.targetId,
       relation,
     }));
-  return { nodes, links };
+  if (!hideIsolated) return { nodes, links };
+  const connected = new Set(links.flatMap(l => [endpointId(l.source), endpointId(l.target)]));
+  return { nodes: nodes.filter(n => connected.has(n.id)), links };
 }
 
 // nodeVal is volume; cube the desired radius so high-degree nodes stay visibly larger.

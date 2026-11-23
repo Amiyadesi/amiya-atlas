@@ -1,9 +1,11 @@
 <script lang="ts">
+  import { confirmDialog } from "../../lib/dialog";
   import { onMount } from "svelte";
   import type { VaultSnapshot } from "../../lib/types";
   import { newId } from "../../lib/types";
   import {
     dateToday,
+    type Transaction,
     type TradePlan,
     type FinanceRecord,
   } from "../../domain/ledger";
@@ -160,6 +162,13 @@
       busy = false;
     }
   }
+  export function repeatTrade(t:Transaction) {
+    const [holding,clearing,cash]=t.legs;
+    side=units(holding.money)>0n?"BUY":"SELL";
+    asset=holding.money.asset;quote=cash.money.asset;quantity=holding.money.amount.replace(/^-/,"");gross=cash.money.amount.replace(/^-/,"");
+    holdingId=holding.accountId;clearingId=clearing.accountId;cashId=cash.accountId;
+    fee=t.legs[5]?.money.amount??"0";feeAccountId=t.legs[5]?.accountId??"";date=dateToday();form="trade";
+  }
   async function trade() {
     await run(async () => {
       const t = tradeTransaction(snapshot, {
@@ -178,7 +187,7 @@
         plans.some(
           (p) => p.asset === asset && p.cooldownUntil && date < p.cooldownUntil,
         ) &&
-        !window.confirm("这项资产仍在冷静期，确认记录已发生的买入？")
+        !await confirmDialog({title: "记录已发生的买入？", description: "这项资产仍在冷静期。", confirmLabel: "继续记录"})
       )
         return;
       const p = emptyProposal();
@@ -405,8 +414,8 @@
     </header>
     <div class="grid metrics">
       <div><small>持仓成本</small>{formatMoney(p.costMoney)}</div>
-      <div><small>已实现盈亏</small>{formatMoney(p.realizedMoney)}</div>
-      <div>
+      <div class:profit={units(p.realizedMoney)>0n} class:loss={units(p.realizedMoney)<0n}><small>已实现盈亏</small>{formatMoney(p.realizedMoney)}</div>
+      <div class:profit={p.unrealized && units(p.unrealized)>0n} class:loss={p.unrealized && units(p.unrealized)<0n}>
         <small>未实现盈亏</small>{p.unrealized
           ? formatMoney(p.unrealized)
           : loadingMarket
@@ -526,6 +535,7 @@
     gap: 0.7rem;
     flex-wrap: wrap;
     margin: 1rem 0;
+    padding:12px 16px;background:var(--surface-raised);border-radius:8px;font-variant-numeric:tabular-nums;
   }
   .market-quote label {
     width: auto;
@@ -560,14 +570,15 @@
     margin: 0;
   }
   .position {
-    padding: 1.5rem 0;
-    border-bottom: 1px solid var(--border);
+    padding: 1.2rem 1.4rem;
+    border: 1px solid var(--border);border-radius:12px;background:var(--surface);margin:12px 0;
   }
   small {
     display: block;
     color: var(--muted);
     font-size: 0.75rem;
   }
+  .metrics .profit{color:var(--income)}.metrics .loss{color:var(--expense)}.metrics small{margin-bottom:4px}.position header{padding-bottom:8px;border-bottom:1px solid var(--border)}
   .metrics {
     margin: 1rem 0;
     font-variant-numeric: tabular-nums;

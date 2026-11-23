@@ -39,6 +39,13 @@ export function moneyField(e: Entity, key: string): Money | undefined {
 export function costOf(e: Entity): Money | undefined {
   return moneyField(e, "fee");
 }
+export function recurringCost(entity: Entity) {
+  const fee = costOf(entity);
+  if (!fee) return;
+  const period = field(entity, "billing_period");
+  const monthly = period === "yearly" ? scale(fee, 1n, 12n) : period === "quarterly" ? scale(fee, 1n, 3n) : fee;
+  return { fee, monthly, usage: period === "usage" };
+}
 export function monthlyCosts(s: VaultSnapshot, date: string) {
   const rows = s.entities
     .filter(
@@ -46,23 +53,13 @@ export function monthlyCosts(s: VaultSnapshot, date: string) {
         !["INACTIVE", "ARCHIVED"].includes(e.status) && e.privacy !== "SECRET",
     )
     .flatMap((entity) => {
-      const fee = costOf(entity);
-      if (!fee) return [];
-      const period = String(field(entity, "billing_period") ?? "monthly");
-      const usage = period === "usage";
-      const monthly =
-        period === "yearly"
-          ? scale(fee, 1n, 12n)
-          : period === "quarterly"
-            ? scale(fee, 1n, 3n)
-            : fee;
+      const cost = recurringCost(entity);
+      if (!cost) return [];
       return [
         {
           entity,
-          fee,
-          monthly,
-          usage,
-          allocation: allocate(s, entity.id, date, monthly),
+          ...cost,
+          allocation: allocate(s, entity.id, date, cost.monthly),
         },
       ];
     });

@@ -2,8 +2,12 @@
   import { onMount, tick } from "svelte";
   import type { ForceGraph3DInstance } from "3d-force-graph";
   import type { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-  import { searchEntities } from "../../domain/proposal";
-  import type { VaultSnapshot } from "../../lib/types";
+  import { resolvedTheme, type Theme } from "../../lib/theme";
+  import { keyFields, monthlyFee } from "../../lib/memory";
+  import { formatMoney } from "../../domain/money";
+  import { isFavorite } from "../../lib/record-tags";
+  import { attributeLabel, searchEntities } from "../../domain/proposal";
+  import type { Entity, VaultSnapshot } from "../../lib/types";
   import {
     categoryLabel,
     categoryGroup,
@@ -11,7 +15,7 @@
   } from "../../lib/record-labels";
   import {
     graphData,
-    graphColors,
+    categoryColors,
     relatedIds,
     endpointId,
     nodeVolume,
@@ -21,11 +25,17 @@
   export let snapshot: VaultSnapshot;
   export let rootId = "";
   export let onOpen: (id: string) => void;
+  export let onFavorite: ((entity: Entity) => void) | undefined = undefined;
+  export let onConnect: ((entity: Entity) => void) | undefined = undefined;
   export let moneyData: Record<
     string,
     { label: string; weight: number; idle?: string }
   > = {};
   export let onPick: (id: string) => void = () => {};
+  let hideIsolated = false,
+    category = "";
+  let ambient: import("three").AmbientLight,
+    fill: import("three").DirectionalLight;
   let focus = rootId,
     loadedRoot = rootId,
     search = "",
@@ -61,9 +71,16 @@
     依赖: ["DEPENDS_ON", "USES", "CONNECTED_VIA"],
     部署: ["SOURCE_IN", "DEPLOYED_ON"],
   };
-  $: data = graphData(snapshot, filter ? filters[filter] : undefined);
+  $: data = graphData(
+    snapshot,
+    filter ? filters[filter] : undefined,
+    hideIsolated,
+  );
+  $: colors = categoryColors($resolvedTheme);
   $: entities = data.nodes.map((n) => n.entity);
   $: entityById = new Map(entities.map((e) => [e.id, e]));
+  $: highlight = hovered || focus;
+  $: neighbors = highlight ? relatedIds(data.links, highlight) : null;
   $: related = relatedIds(data.links, focus);
   $: selected = entityById.get(focus);
   $: selectedRelations = data.links
@@ -75,13 +92,24 @@
     .filter((e) => entityById.has(e.id))
     .slice(0, 8);
   $: groups = [...new Set(entities.map((e) => categoryGroup(e.category)))];
+  $: if (hovered && !entityById.has(hovered)) hovered = "";
+  $: if (category && !groups.includes(category)) category = "";
+  $: if (focus && !entityById.has(focus)) void pick("");
   $: if (ready) load(data);
+  $: if (ready) styleScene($resolvedTheme, highlight, neighbors, category);
   $: if (rootId !== loadedRoot) {
     loadedRoot = rootId;
-    void pick(rootId);
+    void focusRoot(rootId);
   }
-  const activeLink = (l: GraphLink) =>
-    !focus || endpointId(l.source) === focus || endpointId(l.target) === focus;
+  async function focusRoot(id: string) {
+    if (id === focus) return;
+    if (id && hideIsolated && !entityById.has(id)) {
+      hideIsolated = false;
+      await tick();
+      if (id !== rootId) return;
+    }
+    await pick(id);
+  }
   function tooltip(text: string) {
     const el = document.createElement("span");
     el.textContent = text;
@@ -100,7 +128,11 @@
       center = graph.cameraPosition();
     const { width, height } = viewport.getBoundingClientRect();
     const candidates = data.nodes
-      .filter((n) => !focus || related.has(n.id) || n.id === hovered)
+      .filter((n) =>
+        neighbors
+          ? neighbors.has(n.id)
+          : !category || categoryGroup(n.entity.category) === category,
+      )
       .map((n) => {
         const distance = Math.hypot(
           n.x - center.x,
@@ -153,7 +185,7 @@
           x: p.x,
           y: p.y + 13,
           selected: n.id === focus,
-          color: n.color,
+          color: colors[categoryGroup(n.entity.category)],
         },
       ];
     });
@@ -190,23 +222,44 @@
     clearTimeout(fitTimer);
     fitTimer = setTimeout(() => (focus ? arrangeFocus() : fit()), 350);
   }
-  function styleFocus() {
+  function styleScene(
+    theme: Theme,
+    id: string,
+    nearby: Set<string> | null,
+    group: string,
+  ) {
+    if (!graph) return;
+    const styles = getComputedStyle(container);
+    const color = (key: string) => styles.getPropertyValue(key).trim();
+    const base = color("--graph-link"),
+      dim = color("--graph-dim"),
+      accent = color("--accent");
+    const inGroup = (nodeId: string) =>
+      categoryGroup(entityById.get(nodeId)!.category) === group;
+    const lit = (l: GraphLink) => {
+      const a = endpointId(l.source),
+        b = endpointId(l.target);
+      return id ? a === id || b === id : !!group && (inGroup(a) || inGroup(b));
+    };
+    const palette = categoryColors(theme);
     graph
-      ?.nodeColor((n) =>
-        focus && !related.has(n.id)
-          ? "#344153"
-          : n.id === focus
-            ? "#ffffff"
-            : n.color,
+      .backgroundColor(color("--graph-bg"))
+      .nodeColor((n) =>
+        n.id === id
+          ? accent
+          : (nearby ? !nearby.has(n.id) : group && !inGroup(n.id))
+            ? dim
+            : palette[categoryGroup(n.entity.category)],
       )
-      .linkColor((l) =>
-        activeLink(l) ? (focus ? "#a7c8e9" : "#7189a7") : "#273345",
-      )
-      .linkDirectionalArrowLength((l) => (activeLink(l) ? (focus ? 5 : 3) : 0));
+      .linkColor((l) => (lit(l) ? accent : id || group ? dim : base))
+      .linkWidth((l) => (lit(l) ? 1.25 : 0))
+      .linkDirectionalArrowLength((l) => (lit(l) ? 5 : id || group ? 0 : 3));
+    ambient.intensity = theme === "light" ? 1.15 : 0.85;
+    fill.color.set(theme === "light" ? 0xd9dcff : 0x91a8e5);
+    labelsSoon();
   }
   function arrangeFocus() {
     if (!graph) return;
-    styleFocus();
     if (!home.size)
       for (const n of data.nodes) home.set(n.id, { x: n.x, y: n.y, z: n.z });
     const root = home.get(focus),
@@ -365,7 +418,6 @@
       graph
         .width(viewport.clientWidth)
         .height(viewport.clientHeight)
-        .backgroundColor("#142033")
         .showNavInfo(false)
         .nodeOpacity(1)
         .nodeVal(
@@ -419,7 +471,6 @@
         .nodeLabel((n) => tooltip(n.entity.name))
         .linkOpacity(0.45)
         .linkWidth(0)
-        .linkColor("#7189a7")
         .linkDirectionalArrowResolution(5)
         .linkDirectionalArrowLength(3)
         .linkDirectionalArrowRelPos(1)
@@ -451,9 +502,10 @@
       graph.renderer().setPixelRatio(Math.min(devicePixelRatio, 1.6));
       const key = new DirectionalLight(0xffffff, 2.5);
       key.position.set(-100, 180, 240);
-      const fill = new DirectionalLight(0x82b6ef, 1);
+      fill = new DirectionalLight(0x82b6ef, 1);
       fill.position.set(200, -80, -140);
-      graph.lights([new AmbientLight(0xffffff, 0.85), key, fill]);
+      ambient = new AmbientLight(0xffffff, 0.85);
+      graph.lights([ambient, key, fill]);
       const controls = graph.controls() as OrbitControls;
       controls.enableDamping = !reduced;
       controls.dampingFactor = 0.12;
@@ -540,9 +592,18 @@
       >{#each Object.keys(filters) as type}<option>{type}</option
         >{/each}</select
     >
-    <button class="secondary" on:click={() => pick("")}>全部资产</button><button
+    <label class="isolation"
+      ><input type="checkbox" bind:checked={hideIsolated} />隐藏孤立节点</label
+    >
+    <button
       class="secondary"
-      on:click={toggleFullscreen}>{fullscreen ? "退出全屏" : "全屏"}</button
+      on:click={() => {
+        category = filter = "";
+        hideIsolated = false;
+        void pick("");
+      }}>全部资产</button
+    ><button class="secondary" on:click={toggleFullscreen}
+      >{fullscreen ? "退出全屏" : "全屏"}</button
     >
   </div>
   <div class="asset-canvas" class:with-selection={!!selected}>
@@ -564,8 +625,12 @@
         .links.length} 条关系
     </div>
     <div class="canvas-legend">
-      {#each groups as group}<span
-          ><i style={`background:${graphColors[group]}`}></i>{group}</span
+      {#each groups as group}<button
+          aria-pressed={category === group}
+          on:click={() => {
+            category = category === group ? "" : group;
+            if (focus) void pick("");
+          }}><i style={`background:${colors[group]}`}></i>{group}</button
         >{/each}
     </div>
     <div class="canvas-zoom">
@@ -577,7 +642,9 @@
     {#if !ready && !error}<div class="graph-empty" role="status">
         正在打开三维图…
       </div>{:else if !entities.length}<div class="graph-empty">
-        添加资产后，在这里查看关联
+        {hideIsolated
+          ? "当前筛选下没有相连的资产"
+          : "添加资产后，在这里查看关联"}
       </div>{/if}
     {#if selected}<aside class="selection-detail">
         <div class="selection-title">
@@ -585,17 +652,45 @@
             <small>{categoryLabel(selected.category)}</small>
             <h2>{selected.name}</h2>
           </div>
+          {#if onFavorite}<button
+              class="favorite-toggle"
+              aria-label={selected.tags.some(isFavorite) ? "取消收藏" : "收藏"}
+              aria-pressed={selected.tags.some(isFavorite)}
+              on:click={() => onFavorite!(selected!)}
+              >{selected.tags.some(isFavorite) ? "★" : "☆"}</button
+            >{/if}
           <button aria-label="取消选择" on:click={() => pick("")}>×</button>
         </div>
         {#if selected.tags.length}<div class="selection-tags">
             {selected.tags.join(" / ")}
           </div>{/if}
-        {#if moneyData[selected.id]}<p>
-            {moneyData[selected.id].label} / 月
-          </p>{/if}
-        <button class="open-detail" on:click={() => openDetail(selected.id)}
-          >查看详情</button
-        >
+        <dl class="selection-fields">
+          {#each keyFields(selected) as field}<div>
+              <dt>{attributeLabel(field.key)}</dt>
+              <dd>{field.text}</dd>
+            </div>{/each}
+          {#if monthlyFee(selected)}<div>
+              <dt>月度费用</dt>
+              <dd>{formatMoney(monthlyFee(selected)!)}</dd>
+            </div>
+          {:else if moneyData[selected.id]}<div>
+              <dt>本月成本</dt>
+              <dd>{moneyData[selected.id].label}</dd>
+            </div>{/if}
+        </dl>
+        <div class="detail-actions">
+          <button class="secondary" on:click={() => openDetail(selected!.id)}
+            >查看详情</button
+          >
+          {#if onConnect}<button
+              class="secondary"
+              on:click={async () => {
+                if (document.fullscreenElement === container)
+                  await document.exitFullscreen();
+                onConnect!(selected!);
+              }}>新增关联</button
+            >{/if}
+        </div>
         <div class="selection-relations">
           {#each selectedRelations as relation}{@const outgoing =
               relation.sourceId === focus}{@const other = entityById.get(
@@ -666,7 +761,7 @@
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 7px;
-    box-shadow: 0 8px 24px #101a3033;
+    box-shadow: 0 8px 24px var(--border);
     max-height: 330px;
     overflow: auto;
   }
@@ -700,7 +795,7 @@
     height: calc(100dvh - 240px);
     max-height: 920px;
     overflow: hidden;
-    background: #142033;
+    background: var(--graph-bg);
   }
   .expanded .asset-canvas,
   :fullscreen .asset-canvas {
@@ -734,24 +829,24 @@
     max-width: 190px;
     overflow: hidden;
     text-overflow: ellipsis;
-    color: #e3ebf9;
+    color: var(--text);
     text-shadow:
-      0 1px 4px #142033,
-      1px 0 3px #142033,
-      -1px 0 3px #142033;
+      0 1px 4px var(--graph-bg),
+      1px 0 3px var(--graph-bg),
+      -1px 0 3px var(--graph-bg);
     border-bottom: 1px solid var(--node-color);
     padding: 1px 2px;
   }
   .node-labels span.chosen {
     font-weight: 700;
-    color: #fff;
+    color: var(--text);
     font-size: 13px;
   }
   .canvas-count {
     position: absolute;
     bottom: 17px;
     left: 18px;
-    color: #c1cfe2;
+    color: var(--muted);
     font-size: 12px;
     pointer-events: none;
   }
@@ -760,17 +855,23 @@
     top: 16px;
     left: 18px;
     display: flex;
-    gap: 15px;
+    gap: 5px;
     flex-wrap: wrap;
-    color: #aabbd3;
-    pointer-events: none;
+    color: var(--muted);
     max-width: calc(100% - 30px);
     font-size: 11px;
   }
   .with-selection .canvas-legend {
     max-width: calc(100% - 310px);
   }
-  .canvas-legend span {
+  .canvas-legend button {
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    color: var(--text);
+    background: var(--graph-glass);
+    padding: 3px 8px;
+    font: inherit;
+    backdrop-filter: blur(8px);
     display: flex;
     gap: 5px;
     align-items: center;
@@ -791,23 +892,23 @@
     right: 292px;
   }
   .canvas-zoom button {
-    background: #24334a;
-    color: #d5e4f9;
-    border: 1px solid #40516a;
+    background: var(--graph-glass);
+    color: var(--text);
+    border: 1px solid var(--border-strong);
     padding: 7px 11px;
     cursor: pointer;
     font: inherit;
     font-size: 12px;
   }
   .canvas-zoom button:hover {
-    background: #364a68;
+    background: var(--surface-hover);
   }
   .graph-empty {
     position: absolute;
     inset: 0;
     display: grid;
     place-items: center;
-    color: #c1cfe2;
+    color: var(--muted);
     pointer-events: none;
     font-size: 13px;
   }
@@ -815,9 +916,9 @@
     position: absolute;
     inset: 0 0 0 auto;
     width: 280px;
-    background: #1b2b42;
-    color: #e3ebf9;
-    border-left: 1px solid #354860;
+    background: var(--surface);
+    color: var(--text);
+    border-left: 1px solid var(--border);
     padding: 20px;
     overflow: auto;
     box-sizing: border-box;
@@ -837,13 +938,13 @@
   .selection-title small,
   .selection-tags,
   .selection-relations small {
-    color: #a8bdd8;
+    color: var(--muted);
     font-size: 11px;
   }
   .selection-title button {
     border: 0;
     background: none;
-    color: #c2d0e4;
+    color: var(--muted);
     font-size: 22px;
     padding: 0;
     cursor: pointer;
@@ -851,15 +952,64 @@
   .selection-tags {
     margin-bottom: 16px;
   }
-  .open-detail {
-    border: 1px solid #6888b5;
-    background: #293f60;
-    color: #f1f6ff;
-    padding: 8px 14px;
+  .isolation {
+    flex-direction: row;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+  }
+  .isolation input {
+    accent-color: var(--accent);
+  }
+  .canvas-toolbar {
+    border-bottom: 1px solid var(--border);
+  }
+  .canvas-legend button:hover,
+  .canvas-legend button[aria-pressed="true"] {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .canvas-zoom {
+    overflow: hidden;
     border-radius: 6px;
-    cursor: pointer;
-    width: 100%;
-    margin-bottom: 20px;
+  }
+  .canvas-count {
+    background: var(--graph-glass);
+    border-radius: 5px;
+    padding: 3px 6px;
+  }
+  .selection-fields {
+    margin: 0 0 14px;
+    font-size: 12px;
+  }
+  .selection-fields div {
+    display: grid;
+    grid-template-columns: 70px minmax(0, 1fr);
+    gap: 8px;
+    margin: 6px 0;
+  }
+  .selection-fields dt {
+    color: var(--muted);
+  }
+  .selection-fields dd {
+    overflow-wrap: anywhere;
+    margin: 0;
+  }
+  .selection-title > div {
+    flex: 1;
+  }
+  .selection-title .favorite-toggle {
+    color: var(--accent);
+  }
+  .detail-actions {
+    display: flex;
+    gap: 8px;
+    margin: 12px 0;
+  }
+  .detail-actions button {
+    padding: 6px 10px;
+    min-height: 32px;
   }
   .selection-relations {
     display: flex;
@@ -868,14 +1018,14 @@
   }
   .selection-relations button {
     border: 0;
-    border-bottom: 1px solid #354860;
+    border-bottom: 1px solid var(--border);
     padding: 12px 0;
     text-align: left;
     background: none;
     display: flex;
     flex-direction: column;
     gap: 5px;
-    color: #e3ebf9;
+    color: var(--text);
     cursor: pointer;
   }
   .selection-relations strong {
@@ -885,11 +1035,11 @@
   }
   .selection-relations > span {
     font-size: 12px;
-    color: #a8bdd8;
+    color: var(--muted);
   }
   .graph-error {
     padding: 12px;
-    color: var(--danger);
+    color: var(--expense);
     margin: 0;
   }
   @media (max-width: 700px) {
@@ -920,7 +1070,7 @@
       width: 100%;
       height: 205px;
       border-left: 0;
-      border-top: 1px solid #354860;
+      border-top: 1px solid var(--border);
       padding: 14px 18px;
     }
     .selection-title h2 {
@@ -932,14 +1082,6 @@
     }
     .selection-tags {
       display: none;
-    }
-    .open-detail {
-      width: auto;
-      position: absolute;
-      right: 50px;
-      top: 12px;
-      margin: 0;
-      font-size: 11px;
     }
     .selection-relations {
       display: grid;

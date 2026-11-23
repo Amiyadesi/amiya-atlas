@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { confirmDialog } from "../../lib/dialog";
   import { ASSETS, money, type Money } from "../../domain/money";
   import { onMount, onDestroy } from "svelte";
   import { saveSnapshot } from "../../lib/api";
@@ -36,6 +37,7 @@
   } from "../../domain/relationships";
   import ConnectionPicker from "./ConnectionPicker.svelte";
   export let snapshot: VaultSnapshot;
+  export let initial:Entity|undefined=undefined;
   export let entity: Entity | undefined = undefined;
   export let saved: (value: VaultSnapshot, id: string) => void;
   export let close: () => void;
@@ -44,7 +46,7 @@
   const timestamp = nowIso();
   let draft: Entity = entity
     ? structuredClone(entity)
-    : {
+    : initial ? structuredClone(initial) : {
         id: newId("entity"),
         name: "",
         category: "Account",
@@ -84,6 +86,8 @@
     error = "";
   let created: Entity[] = [],
     connectionError = "";
+  export let showRelations = false;
+  let relationsSection: HTMLDetailsElement;
   let dialog: HTMLDialogElement;
   $: others = [...snapshot.entities, ...created].filter(
     (item) => item.id !== draft.id && item.privacy !== "SECRET",
@@ -105,12 +109,13 @@
   };
   onMount(() => {
     dialog.showModal();
+    if (showRelations) relationsSection.querySelector("button")?.focus();
   });
   onDestroy(() => {
     disposed = true;
   });
-  function presets() {
-    if (fields.length && !window.confirm("更换类型并替换当前字段？")) return;
+  async function presets() {
+    if (fields.length && !await confirmDialog({title: "替换当前字段？", description: "现有字段将替换为所选类型的预设字段。", danger: true, confirmLabel: "替换字段"})) return;
     const template =
       TEMPLATES.find((item) => item.category === draft.category) ??
       TEMPLATES.find(
@@ -313,11 +318,7 @@
       (item) => item.sourceId === draft.id || item.targetId === draft.id,
     );
     if (
-      !window.confirm(
-        referenced
-          ? `删除“${draft.name}”并解除它的全部关联？其他记录保留。`
-          : `删除“${draft.name}”？`,
-      )
+      !await confirmDialog({title: `删除“${draft.name}”？`, description: referenced ? "这条记录的全部关联也将解除，其他记录保留。" : undefined, danger: true, confirmLabel: "删除记录"})
     )
       return;
     busy = true;
@@ -561,7 +562,7 @@
           >×</button
         >
       </div>{/each}
-    <details>
+    <details open={showRelations} bind:this={relationsSection}>
       <summary>更多关联</summary>
       <div class="section-heading">
         <h3>关联</h3>
@@ -832,7 +833,7 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    background: var(--surface-alt);
+    background: var(--surface-raised);
     padding: 2px 8px;
     margin: 0 6px 6px 0;
     border-radius: 5px;
@@ -849,7 +850,7 @@
     font-size: 22px;
   }
   .danger {
-    color: #a63e57;
+    color: var(--expense);
   }
   @media (max-width: 650px) {
     .editor-grid,
