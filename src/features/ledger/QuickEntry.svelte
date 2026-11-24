@@ -49,7 +49,7 @@
       const raw = sentence;
       const p = ai
         ? await parseFinance(config, raw, snapshot)
-        : localLedgerProposal(raw, snapshot);
+        : localLedgerProposal(raw, snapshot, undefined, true);
       if (disposed || raw !== sentence) return;
       const txs =
         p?.financeActions?.flatMap((a) =>
@@ -194,10 +194,10 @@
       disabled={busy || !sentence.trim()}
       on:click={() => parse(true)}>AI 整理</button>{/if}
     </div>
-    {#if drafts.length}<div class="confirmation" aria-label="入账预览">
+    {#if drafts.length}<div class="confirmation reveal-in" aria-label="入账预览">
       {#each drafts as d, i}
         {#if !editing}<div class="draft-summary"><span>{d.category} · {d.account}</span><strong>{d.asset} {d.amount}</strong></div>
-        {:else}<div class="draft">
+        {:else}<div class="draft reveal-in">
           <small>{d.original.note} · {d.asset}</small>
           <label
             >金额<input

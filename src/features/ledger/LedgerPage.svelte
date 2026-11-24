@@ -1,6 +1,7 @@
 <script lang="ts">
   import Icon from "../../lib/Icon.svelte";
-  import {tick} from "svelte";
+  import { onDestroy, tick } from "svelte";
+  import { createNumberAnimator } from "../../lib/motion";
   import ReviewCharts from "./ReviewCharts.svelte";
   import TransactionDrawer from "./TransactionDrawer.svelte";
   import {groupLedgerRows,viewportLines,budgetPercent} from "../../domain/ledger-view";
@@ -23,6 +24,7 @@
     dateToday,
     accountBalances,
     reconciliation,
+    reverseTransaction,
     ledgerCsv,
     preferences,
     validateLedger,
@@ -53,7 +55,7 @@
   } from "../../domain/reports";
   export let snapshot: VaultSnapshot;
   export let config: ProviderConfig;
-  export let saved: (next: VaultSnapshot) => void;
+  export let saved: (next: VaultSnapshot, message?: string) => void;
   export let stage: (raw: string, proposal: Proposal) => Promise<void>;
   export let edit: (entity?: Entity) => void;
   export let entry:(original?:Transaction,order?:Entity)=>void;
@@ -86,8 +88,17 @@
     allocationShares: Array<{ projectId: string; weight: number }> = [];
   let budget = "",
     budgetProject = "",
+    editingBudgetId = "",
+    editingBudgetMonth = "",
     week = false,
     entryId = "";
+  let animatedHeroSpend = 0,
+    heroAnimating = false;
+  const heroSpendAnimator = createNumberAnimator((value, animating) => {
+    animatedHeroSpend = value;
+    heroAnimating = animating;
+  });
+  onDestroy(() => heroSpendAnimator.cancel());
   let question = "",
     interpreted: LedgerQuery | undefined;
   $: answer = interpreted ? queryReport(snapshot, interpreted) : undefined;
@@ -129,7 +140,28 @@
     snapshot.entities.some((e) => e.id === p.id && isCommercialProject(e)),
   );
   $: costs = monthlyCosts(snapshot, `${month}-01`);
-  const amounts=(values:Money[])=>values.map(m=>m.asset==="CNY"?"¥"+m.amount:formatMoney(m)).join(" · ") || "¥0.00";
+  const formatCny = (m: Money) =>
+    m.asset === "CNY"
+      ? m.amount.startsWith("-")
+        ? "−¥" + m.amount.slice(1)
+        : "¥" + m.amount
+      : formatMoney(m);
+  const amounts = (values: Money[]) =>
+    values.map(formatCny).join(" · ") || "¥0.00";
+  $: singleCnySpend =
+    report.expense.length === 0
+      ? 0
+      : report.expense.length === 1 && report.expense[0].asset === "CNY"
+        ? Number(report.expense[0].amount)
+        : null;
+  $: if (singleCnySpend !== null) {
+    heroSpendAnimator.set(singleCnySpend);
+  }
+  $: heroSpendDisplay =
+    heroAnimating && singleCnySpend !== null
+      ? (animatedHeroSpend < 0 ? "−¥" : "¥") +
+        Math.abs(animatedHeroSpend).toFixed(2)
+      : amounts(report.expense);
   $: budgets=(snapshot.financeRecords??[]).flatMap(b=>{
     if(b.type!=="budget" || b.month!==month)return [];
     const project=monthReport.projects.find(p=>p.id===b.projectId);
@@ -193,9 +225,9 @@
       busy = false;
     }
   }
-  async function persist(next: VaultSnapshot) {
+  async function persist(next: VaultSnapshot, message?: string) {
     validateLedger(next, snapshot);
-    saved(await saveSnapshot(next));
+    saved(await saveSnapshot(next), message);
     form = "";
   }
   async function setCommercial(project: Entity, enabled: boolean) {
@@ -245,18 +277,24 @@
     });
   }
   async function reverse(t: Transaction) {
+    if (
+      !(await confirmDialog({
+        title: "冲正这笔流水？",
+        description:
+          "账本流水不可直接删除，确认后将生成一笔金额相反的抵消记录并保留完整审计痕迹。",
+        danger: true,
+        confirmLabel: "确认冲正",
+      }))
+    )
+      return;
     await run(async () => {
-      const p = emptyProposal();
-      p.financeActions = [
-        {
-          type: "ledger.reverse",
-          transactionId: t.id,
-          id: newId("tx"),
-          idempotencyKey: newId("reverse"),
-          occurredAt: dateToday(),
-        },
-      ];
-      await stage(`冲正 ${t.note ?? t.payee ?? t.id}`, p);
+      const rev = reverseTransaction(t, dateToday());
+      const next: VaultSnapshot = {
+        ...snapshot,
+        transactions: [...(snapshot.transactions ?? []), rev],
+      };
+      await persist(next, "已生成冲正记录");
+      entryId = "";
     });
   }
   async function reconcile() {
@@ -313,19 +351,51 @@
   }
   async function saveBudget() {
     await run(async () => {
-      const next = structuredClone(snapshot),
-        id = `budget:${month}:${asset}:${budgetProject}`;
+      const targetMonth = editingBudgetId ? editingBudgetMonth || month : month;
+      const id = `budget:${targetMonth}:${asset}:${budgetProject}`;
+      if (
+        editingBudgetId &&
+        id !== editingBudgetId &&
+        snapshot.financeRecords?.some((r) => r.id === id)
+      ) {
+        throw new Error("该币种和项目下已有预算，请直接点击原预算修改");
+      }
+      const next = structuredClone(snapshot);
       next.financeRecords = [
-        ...(next.financeRecords?.filter((r) => r.id !== id) ?? []),
+        ...(next.financeRecords?.filter(
+          (r) => r.id !== id && (!editingBudgetId || r.id !== editingBudgetId),
+        ) ?? []),
         {
           id,
           type: "budget",
-          month,
+          month: targetMonth,
           value: money(budget, asset),
           projectId: budgetProject || undefined,
         },
       ];
-      await persist(next);
+      await persist(next, "预算已保存");
+      editingBudgetId = "";
+      editingBudgetMonth = "";
+    });
+  }
+  async function deleteBudget(id: string) {
+    if (
+      !(await confirmDialog({
+        title: "删除这项预算？",
+        description: "仅移除本月的预算目标，不会影响已记录的流水。",
+        danger: true,
+        confirmLabel: "删除预算",
+      }))
+    )
+      return;
+    await run(async () => {
+      const next = structuredClone(snapshot);
+      next.financeRecords = (next.financeRecords ?? []).filter(
+        (r) => r.id !== id,
+      );
+      await persist(next, "预算已删除");
+      editingBudgetId = "";
+      editingBudgetMonth = "";
     });
   }
   async function savePreferences() {
@@ -437,10 +507,10 @@
 
   {#if tab === "流水"}
           <button class="monthly-hero" aria-label="本月概览，查看洞察" on:click={showReview}>
-            <span class="hero-label">本月支出 <Icon name="Chevron"/></span><strong class="hero-amount">{amounts(report.expense)}</strong>
+            <span class="hero-label">本月支出 <Icon name="Chevron"/></span><strong class="hero-amount">{heroSpendDisplay}</strong>
             <span class="hero-foot"><span>本月收入<b>{amounts(report.income)}</b></span>
             {#if budgets.length}{@const budget=budgets[0]}<span>预算进度 · {budget.label}<b>{Number.isFinite(budget.percent)?Math.round(budget.percent)+"%":"超支"}</b>
-              <i class="mini-track"><i style:width={Math.max(0,Math.min(100,budget.percent))+"%"}></i></i></span>
+              <i class="mini-track"><i style:transform={`scaleX(${Math.max(0,Math.min(1,budget.percent/100))})`}></i></i></span>
             {:else}<span>固定月成本<b>{amounts(costs.totals)}</b></span>{/if}</span>
           </button>
     <slot/>
@@ -450,7 +520,7 @@
       </button>{/if}
     </div>
     {#if filtersOpen}
-    <div class="ledger-filters">
+    <div class="ledger-filters reveal-in">
       <input
         type="search"
         aria-label="搜索流水"
@@ -537,7 +607,7 @@
           <span>{project.name}</span><strong>{list(allocated)}</strong>
         </div>{/if}{/each}
     <div class="report-row">
-      <span>闲置容量</span><strong>{list(costs.idle)}</strong>
+      <span>闲置容量<small>已付固定费用中尚未分摊给项目的部分</small></span><strong>{list(costs.idle)}</strong>
     </div>
     {#if legacy.length}<h3>旧费用待整理</h3>
       {#each legacy as item}<div class="report-row">
@@ -573,14 +643,15 @@
         >
         <button
           class="secondary"
+          aria-expanded={form === "allocation"}
           on:click={() => {
-            form = "allocation";
+            form = form === "allocation" ? "" : "allocation";
             effectiveFrom = dateToday();
           }}>分摊成本</button
         ><button class="secondary" on:click={() => edit()}>客户 / 订单</button>
       </div>
     </div>
-    {#if form === "business"}<div class="ledger-form" aria-label="经营项目">
+    {#if form === "business"}<div class="ledger-form reveal-in" aria-label="经营项目">
         {#each projects as project}<label class="business-project"
             ><input
               type="checkbox"
@@ -591,7 +662,7 @@
           >{:else}<p class="muted">还没有项目</p>{/each}
       </div>{/if}
     {#if form === "allocation"}<form
-        class="ledger-form"
+        class="ledger-form reveal-in"
         on:submit|preventDefault={allocate}
       >
         <div class="form-grid">
@@ -687,17 +758,28 @@
       <div class="button-row">
         <button class="secondary" on:click={() => (week = !week)}
           >{week ? "按月" : "最近七天"}</button
-        ><button class="secondary" on:click={() => (form = "budget")}
-          >设置预算</button
+        ><button
+          class="secondary"
+          aria-expanded={form === "budget"}
+          on:click={() => {
+            if (form === "budget" && !editingBudgetId) {
+              form = "";
+            } else {
+              editingBudgetId = "";
+              editingBudgetMonth = "";
+              budget = "";
+              budgetProject = "";
+              form = "budget";
+            }
+          }}>设置预算</button
         >
       </div>
     </div>
     {@const net=total([...report.income,...report.expense.map(negate)])}
-    <div class="insight-hero"><span>净收支</span><strong>{net.length?list(net):"¥0.00"}</strong>
-      <small>收入 {list(report.income)}　·　支出 {list(report.expense)}</small></div>
-    {#if month}<ReviewCharts {snapshot} {month}/>{/if}
+    <div class="insight-hero"><span>净收支</span><strong>{net.length?amounts(net):"¥0.00"}</strong>
+      <small>收入 {amounts(report.income)}　·　支出 {amounts(report.expense)}</small></div>
     {#if form === "budget"}<form
-        class="ledger-form"
+        class="ledger-form reveal-in"
         on:submit|preventDefault={saveBudget}
       >
         <div class="form-grid">
@@ -720,30 +802,73 @@
             ></label
           >
         </div>
-        <button class="primary" disabled={busy}>保存</button>
+        <div class="button-row">
+          <button class="primary" disabled={busy}>保存</button>
+          {#if editingBudgetId}
+            <button
+              type="button"
+              class="text-button danger"
+              disabled={busy}
+              on:click={() => deleteBudget(editingBudgetId)}>删除预算</button
+            >
+          {/if}
+          <button
+            type="button"
+            class="text-button"
+            on:click={() => {
+              form = "";
+              editingBudgetId = "";
+              editingBudgetMonth = "";
+            }}>取消</button
+          >
+        </div>
       </form>{/if}
     {#each budgets as {budget:b,spent,percent}}
-        <div class="budget-row" class:over={units(spent)>units(b.value)} class:warn={percent>=80 && percent<=100}>
+        <button
+          type="button"
+          class="budget-row"
+          class:over={units(spent)>units(b.value)}
+          class:warn={percent>=80 && percent<=100}
+          title="点击调整或删除这项预算"
+          on:click={() => {
+            editingBudgetId = b.id;
+            editingBudgetMonth = b.month;
+            budget = b.value.amount;
+            asset = b.value.asset;
+            budgetProject = b.projectId ?? "";
+            form = "budget";
+          }}
+        >
           <div><strong>{projects.find(p=>p.id===b.projectId)?.name??"全部"}预算</strong><span>{formatMoney(spent)} / {formatMoney(b.value)}</span></div>
-          <div class="budget-track"><i style:width={Math.min(100,Math.max(0,percent))+"%"}></i></div>
+          <div class="budget-track"><i style:transform={`scaleX(${Math.min(1,Math.max(0,percent/100))})`}></i></div>
           <div><b>{Number.isFinite(percent)?percent+"%":"超出零预算"}</b><small>{units(spent)>units(b.value)?"超出":"剩余"} {formatMoney(units(spent)>units(b.value)?subtract(spent,b.value):subtract(b.value,spent))}</small></div>
+        </button>{/each}
+    {#if monthReport.transactions.length}
+      {#if month}<ReviewCharts {snapshot} {month}/>{/if}
+      <MoneyGraph
+        {snapshot}
+        {month}
+        mode="flow"
+        onOpen={(id) => edit(snapshot.entities.find((e) => e.id === id))}
+      />
+    {:else}
+      <div class="stream-empty review-empty">
+        <strong>这个月还没有收支记录</strong>
+        <span>记录第一笔后，每日支出趋势、分类占比与资金流向会自动呈现。<button class="text-button" on:click={() => entry()}>现在记一笔</button></span>
+      </div>
+    {/if}
+    {#if expected.length}
+      <h3>续费与差额</h3>
+      {#each expected as row}<div class="report-row">
+          <span>{row.due} · {row.entity.name}</span><span
+            >{row.actual
+              ? `实际 ${formatMoney(row.actual)}`
+              : `预计 ${formatMoney(row.expected)}`}</span
+          >{#if row.difference && units(row.difference) !== 0n}<strong
+              >差额 {formatMoney(row.difference)}</strong
+            >{/if}
         </div>{/each}
-    <MoneyGraph
-      {snapshot}
-      {month}
-      mode="flow"
-      onOpen={(id) => edit(snapshot.entities.find((e) => e.id === id))}
-    />
-    <h3>续费与差额</h3>
-    {#each expected as row}<div class="report-row">
-        <span>{row.due} · {row.entity.name}</span><span
-          >{row.actual
-            ? `实际 ${formatMoney(row.actual)}`
-            : `预计 ${formatMoney(row.expected)}`}</span
-        >{#if row.difference && units(row.difference) !== 0n}<strong
-            >差额 {formatMoney(row.difference)}</strong
-          >{/if}
-      </div>{/each}
+    {/if}
     <details class="query-disclosure"><summary>查询账本</summary><form
       class="sentence-entry"
       on:submit|preventDefault={() =>
@@ -798,7 +923,12 @@
       <h2>账户</h2>
       <button
         class="secondary"
+        aria-expanded={form === "account" && !editingAccount}
         on:click={() => {
+          if (form === "account" && !editingAccount) {
+            form = "";
+            return;
+          }
           form = "account";
           editingAccount = "";
           accountName = "";
@@ -849,7 +979,10 @@
                 next.ledgerAccounts = next.ledgerAccounts?.map((item) =>
                   item.id === a.id ? { ...item, archived: !a.archived } : item,
                 );
-                await persist(next);
+                await persist(
+                  next,
+                  `${a.archived ? "已启用" : "已归档"}「${a.name}」`,
+                );
               })}>{a.archived ? "启用" : "归档"}</button
           >
         </div>
@@ -896,7 +1029,8 @@
   .day-header{height:38px;display:flex;align-items:center;gap:12px;background:var(--surface-raised);border-bottom:1px solid var(--border);padding:0 10px;font-size:12px;font-variant-numeric:tabular-nums}.day-header strong{margin-right:auto}
   .income{color:var(--income)}.expense{color:var(--expense)}.transfer{color:var(--info)}
   .category{background:var(--accent-soft);color:var(--accent);font-size:12px;padding:2px 7px;border-radius:5px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .budget-row{--bar:var(--accent);margin:15px 0;padding:16px;background:var(--surface);border:1px solid var(--border);border-radius:10px;font-variant-numeric:tabular-nums}.budget-row.warn{--bar:var(--warning)}.budget-row.over{--bar:var(--expense)}.budget-row>div{display:flex;justify-content:space-between;gap:6px;flex-wrap:wrap}.budget-track{height:7px;background:var(--surface-raised);margin:10px 0;border-radius:8px;overflow:hidden}.budget-track i{background:var(--bar);height:100%}.budget-row small{background:var(--surface-raised);color:var(--bar);border-radius:5px;padding:0 6px}.budget-row b{color:var(--bar)}
+  .budget-row{--bar:var(--accent);display:block;width:100%;text-align:left;margin:15px 0;padding:16px;background:var(--surface);border:1px solid var(--border);border-radius:14px;font-variant-numeric:tabular-nums}.budget-row:hover{border-color:var(--border-strong)}.budget-row.warn{--bar:var(--warning)}.budget-row.over{--bar:var(--expense)}.budget-row>div{display:flex;justify-content:space-between;gap:6px;flex-wrap:wrap}.budget-track{height:7px;background:var(--surface-raised);margin:10px 0;border-radius:8px;overflow:hidden}.budget-track i{background:var(--bar);height:100%}.budget-row small{background:var(--surface-raised);color:var(--bar);border-radius:5px;padding:0 6px}.budget-row b{color:var(--bar)}
+  .review-empty{margin:16px 0}
 
   .ledger-totals {
     display: grid;

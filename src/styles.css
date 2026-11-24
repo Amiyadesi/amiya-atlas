@@ -11,6 +11,15 @@
   --shadow-lg:0 24px 80px #20233430,0 4px 15px #20233414;
   --graph-bg:#f2f4f9; --graph-link:#65738c; --graph-dim:#c8cfdd;
   --graph-glass:color-mix(in srgb,var(--surface) 87%,transparent); --on-semantic:#fff;
+  /* Unified motion language: one curve family and rhythm across the app. */
+  --ease-out:cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring:cubic-bezier(0.2, 0.9, 0.25, 1.04);
+  --ease-in:cubic-bezier(0.4, 0, 1, 1);
+  --dur-press:100ms;
+  --dur-micro:150ms;
+  --dur-base:220ms;
+  --dur-sheet:280ms;
+  --dur-chart:340ms;
   color:var(--text); background:var(--background); font-synthesis:none;
   font-variant-numeric:tabular-nums; font-weight:400; line-height:1.6;
 }
@@ -1881,4 +1890,377 @@ input,select{border-color:transparent;background-color:var(--surface-raised)}
   .lock-screen{padding-top:calc(24px + env(safe-area-inset-top));padding-bottom:calc(24px + env(safe-area-inset-bottom))}
 }
 
-@media(max-width:600px){.commit-feedback,.notice{left:max(12px,env(safe-area-inset-left));right:auto;transform:none;max-width:calc(100vw - 102px - env(safe-area-inset-right));bottom:calc(73px + env(safe-area-inset-bottom));padding:8px 10px;gap:6px}.commit-feedback button{flex:none}}
+@media(max-width:600px){.commit-feedback,.notice,.page-content>.error{left:max(12px,env(safe-area-inset-left));right:auto;transform:none;max-width:calc(100vw - 102px - env(safe-area-inset-right));bottom:calc(73px + env(safe-area-inset-bottom));padding:10px 12px;gap:8px}.commit-feedback button,.notice button{flex:none}}
+
+/* ============================================================================
+   Unified Motion Language & Tactile Interaction Layer (v0.9.6)
+   Compositor-only transforms & opacity, interruptible & reduced-motion aware.
+   ============================================================================ */
+
+/* Sliding active pill inside every .segmented control */
+.segmented {
+  position: relative;
+  isolation: isolate;
+}
+.segmented .seg-thumb {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 0;
+  border-radius: 9px;
+  background: var(--surface);
+  box-shadow: 0 0 0 0.5px var(--border), var(--shadow-sm);
+  pointer-events: none;
+  will-change: transform, width;
+  transition:
+    transform var(--dur-base) var(--ease-out),
+    width var(--dur-base) var(--ease-out),
+    height var(--dur-base) var(--ease-out),
+    opacity var(--dur-micro) var(--ease-out);
+}
+.segmented.has-sliding-thumb button {
+  position: relative;
+  z-index: 1;
+}
+.segmented.has-sliding-thumb button[aria-pressed="true"] {
+  background: transparent;
+  box-shadow: none;
+}
+
+/* Tactile press physics & hover restraint (hover only on hover-capable devices) */
+@media (prefers-reduced-motion: no-preference) {
+  button,
+  .file-button,
+  input,
+  select,
+  .monthly-hero,
+  .profile-row,
+  .setting-row,
+  .entity-list-item,
+  .recent-row {
+    transition:
+      background-color var(--dur-micro) var(--ease-out),
+      border-color var(--dur-micro) var(--ease-out),
+      color var(--dur-micro) var(--ease-out),
+      box-shadow var(--dur-micro) var(--ease-out),
+      transform var(--dur-press) var(--ease-out),
+      opacity var(--dur-micro) var(--ease-out);
+  }
+  .primary:active:not(:disabled),
+  .secondary:active:not(:disabled),
+  .file-button:active,
+  .capture-tool:active:not(:disabled),
+  .record-filters button:active,
+  .pending-pill:active,
+  .filter-pill:active,
+  .back-link:active,
+  .sidebar nav button:active,
+  .segmented button:active,
+  .example-chip:active {
+    transform: scale(0.965);
+  }
+  .icon-button:active:not(:disabled) {
+    transform: scale(0.91);
+  }
+  .floating-add {
+    transition:
+      transform var(--dur-micro) var(--ease-spring),
+      box-shadow var(--dur-micro) var(--ease-out),
+      background-color var(--dur-micro) var(--ease-out);
+  }
+  .floating-add:active {
+    transform: scale(0.92);
+  }
+  .monthly-hero:active,
+  .profile-row:active {
+    transform: scale(0.988);
+  }
+  .setting-row:is(button):active,
+  .recent-row:active,
+  .entity-list-item:active {
+    transform: scale(0.992);
+  }
+  /* Spring toggle switch (compositor-only transform) */
+  .preference-switch {
+    transition:
+      background-color var(--dur-base) var(--ease-out),
+      border-color var(--dur-base) var(--ease-out);
+  }
+  .preference-switch span {
+    transform-origin: center;
+    transition:
+      transform var(--dur-base) var(--ease-spring),
+      background-color var(--dur-micro) var(--ease-out);
+  }
+  .preference-switch:active span {
+    transform: scaleX(1.16);
+  }
+  .preference-switch.enabled:active span {
+    transform: translateX(15px) scaleX(1.16);
+  }
+  /* Progress track compositor-only scaleX fill */
+  .mini-track i,
+  .budget-track i {
+    width: 100%;
+    transform-origin: left center;
+    transition:
+      transform var(--dur-chart) var(--ease-out),
+      background-color var(--dur-base) var(--ease-out);
+  }
+  /* Favorite star spring pop */
+  .favorite-star {
+    display: inline-block;
+    animation: rk-pop var(--dur-base) var(--ease-spring);
+  }
+  /* Popover menu (···) from top-right */
+  .action-menu {
+    transform-origin: top right;
+    animation: rk-popover-in var(--dur-micro) var(--ease-out) backwards;
+  }
+  /* Spatial view transitions (tab switch vs hierarchical push/pop) */
+  .view-stage {
+    animation: rk-tab-in var(--dur-micro) var(--ease-out) backwards;
+  }
+  .view-stage.dir-push {
+    animation: rk-push-in var(--dur-base) var(--ease-out) backwards;
+  }
+  .view-stage.dir-pop {
+    animation: rk-pop-in var(--dur-base) var(--ease-out) backwards;
+  }
+  /* Collapsible disclosure tray via smooth reveal */
+  .reveal-in {
+    animation: rk-reveal-in var(--dur-base) var(--ease-out) backwards;
+  }
+  /* Toasts */
+  .notice,
+  .page-content > .error {
+    animation: rk-toast-in var(--dur-base) var(--ease-out) backwards;
+  }
+  .commit-feedback {
+    animation: rk-toast-mobile-in var(--dur-base) var(--ease-out) backwards;
+  }
+  @media (max-width: 600px) {
+    .notice,
+    .commit-feedback,
+    .page-content > .error {
+      animation: rk-toast-mobile-in var(--dur-base) var(--ease-out) backwards;
+    }
+  }
+  /* Unified Dialog / Modal enter & exit animations (`backwards` on enter releases transform/opacity cleanly for gestures!) */
+  .app-dialog[open],
+  .manual-editor[open],
+  .quick-dialog[open] {
+    animation: rk-dialog-in var(--dur-base) var(--ease-out) backwards;
+  }
+  .app-dialog[open]::backdrop,
+  .manual-editor[open]::backdrop,
+  .quick-dialog[open]::backdrop {
+    animation: rk-backdrop-in var(--dur-base) var(--ease-out) backwards;
+  }
+  .app-dialog.is-closing,
+  .manual-editor.is-closing,
+  .quick-dialog.is-closing {
+    animation: rk-dialog-out var(--dur-micro) var(--ease-in) forwards;
+  }
+  .app-dialog.is-closing::backdrop,
+  .manual-editor.is-closing::backdrop,
+  .quick-dialog.is-closing::backdrop {
+    animation: rk-backdrop-out var(--dur-micro) var(--ease-in) forwards;
+  }
+}
+
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .monthly-hero:hover {
+    transform: translateY(-1px);
+  }
+  .floating-add:hover {
+    transform: translateY(-1px) scale(1.03);
+    box-shadow: 0 8px 22px #4934b25c;
+  }
+  .cards .entity-list-item:hover {
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-md);
+  }
+}
+
+/* Mobile bottom sheet backdrop opacity tracks live drag progress */
+dialog.is-dragging::backdrop {
+  opacity: calc(1 - var(--drag-progress, 0) * 0.7);
+}
+
+@keyframes rk-tab-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 6px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+@keyframes rk-push-in {
+  from {
+    opacity: 0;
+    transform: translate3d(16px, 0, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+@keyframes rk-pop-in {
+  from {
+    opacity: 0;
+    transform: translate3d(-12px, 0, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+@keyframes rk-reveal-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, -6px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+@keyframes rk-popover-in {
+  from {
+    opacity: 0;
+    transform: scale(0.93) translate3d(0, -4px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translate3d(0, 0, 0);
+  }
+}
+@keyframes rk-dialog-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translate3d(0, 8px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translate3d(0, 0, 0);
+  }
+}
+@keyframes rk-dialog-out {
+  from {
+    opacity: 1;
+    transform: scale(1) translate3d(0, 0, 0);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.96) translate3d(0, 6px, 0);
+  }
+}
+@keyframes rk-backdrop-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes rk-backdrop-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+@keyframes rk-toast-in {
+  from {
+    opacity: 0;
+    transform: translate3d(-50%, 14px, 0) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(-50%, 0, 0) scale(1);
+  }
+}
+@keyframes rk-toast-mobile-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 12px, 0) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+@keyframes rk-pop {
+  0% {
+    transform: scale(0.75);
+  }
+  60% {
+    transform: scale(1.22);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+@keyframes rk-sheet-up {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 28px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+@keyframes rk-sheet-down {
+  from {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    opacity: 0;
+    transform: translate3d(0, 28px, 0);
+  }
+}
+@keyframes rk-drawer-in {
+  from {
+    opacity: 0;
+    transform: translate3d(28px, 0, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+@keyframes rk-drawer-out {
+  from {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    opacity: 0;
+    transform: translate3d(24px, 0, 0);
+  }
+}
+
+/* Global reduced-motion contract: every animation & transition respects user preference */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-press: 0ms;
+    --dur-micro: 0ms;
+    --dur-base: 0ms;
+    --dur-sheet: 0ms;
+    --dur-chart: 0ms;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

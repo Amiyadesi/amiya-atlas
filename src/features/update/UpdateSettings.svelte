@@ -1,6 +1,8 @@
 <script lang="ts">
   import { APP_VERSION, compareSemver, githubProxyPrefix, type UpdatePrefs, type UpdateCheckResult } from "../../lib/updater";
   import { isMobile, isWindows, isTauri } from "../../lib/runtime";
+  import Icon from "../../lib/Icon.svelte";
+  import { slidingIndicator } from "../../lib/motion";
 
   export let prefs: UpdatePrefs;
   export let info: UpdateCheckResult | null;
@@ -43,7 +45,7 @@
   </div>
   <div class="source-row">
     <strong>更新来源</strong>
-    <div class="segmented" role="group" aria-label="更新来源">
+    <div class="segmented" role="group" aria-label="更新来源" use:slidingIndicator>
       {#each sources as [source, title]}
         <button aria-pressed={prefs.source === source} on:click={() => change({source})}>{title}</button>
       {/each}
@@ -69,7 +71,7 @@
   </div>
   {#if error}<p class="error" role="alert">{error}</p>{/if}
   {#if info}
-    <div class="result" aria-live="polite">
+    <div class="result reveal-in" aria-live="polite">
       <div class="result-heading">
         <strong>{!info.filename ? "此发布暂无本平台安装包" : info.hasUpdate ? "发现新版本 v" + info.latestVersion : "已是最新版本"}</strong>
         <span class="badge">{info.sourceUsed === "cn" ? "国内镜像" : "国际 GitHub"}</span>
@@ -86,7 +88,7 @@
         </div>
       {/if}
       <div class="links">
-        {#if copyUrl}<button class="text-button" title={copyUrl} on:click={() => copy(copyUrl!)}>{copied === copyUrl ? "已复制下载链接" : "复制下载链接"}</button>{/if}
+        {#if copyUrl}<button class="text-button copy-btn" class:copied={copied === copyUrl} title={copyUrl} on:click={() => copy(copyUrl!)}>{#if copied === copyUrl}<Icon name="Check" /> 已复制下载链接{:else}复制下载链接{/if}</button>{/if}
         <button class="text-button" on:click={() => open(info!.releasePageUrl)}>查看发布页 ↗</button>
       </div>
       {#if manualCopy && manualCopy === copyUrl}<label>请手动复制下载链接<input readonly value={manualCopy} on:focus={e => e.currentTarget.select()} /></label>{/if}
@@ -115,4 +117,7 @@
   .notes { white-space: pre-wrap; max-height: 14rem; overflow: auto; margin: 10px 0; font-size: 14px; }
   .package { display: block; margin: 14px 0 7px; }
   .links { margin-top: 10px; }
+  .copy-btn { display: inline-flex; align-items: center; gap: 4px; }
+  .copy-btn.copied { color: var(--income); }
+  .copy-btn :global(svg) { width: 14px; height: 14px; }
 </style>

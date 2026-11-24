@@ -44,8 +44,8 @@
       <button class="icon-button" aria-label="关闭起步引导" on:click={dismiss}><Icon name="Close"/></button>
     </header>
     <button class="path" on:click={()=>open("assets")}><span>从 Bitwarden / 微信支付宝导入</span><Icon name="Chevron"/></button>
-    <button class="path" aria-expanded={hubs} on:click={()=>hubs=!hubs}><span>30 秒建 3 个核心枢纽</span><Icon name="Chevron"/></button>
-    {#if hubs}<form on:submit|preventDefault={create}>
+    <button class="path" aria-expanded={hubs} on:click={()=>hubs=!hubs}><span>30 秒建 3 个核心枢纽</span><span class="chevron" class:open={hubs}><Icon name="Chevron"/></span></button>
+    {#if hubs}<form class="reveal-in" on:submit|preventDefault={create}>
         <label
           >主力邮箱<input
             type="email"
@@ -82,6 +82,8 @@
   header h2{font-size:14px;margin:0;color:var(--muted)}
   .path{width:100%;min-height:42px;text-align:left;padding:8px 0;background:none;color:var(--text);font-size:14px}
   .path+.path{border-top:.5px solid var(--border)}.path :global(svg){color:var(--muted);width:14px}
+  .chevron{display:inline-flex;transition:transform var(--dur-base,220ms) var(--ease-out,ease-out)}
+  .chevron.open{transform:rotate(90deg)}
   form{display:flex;gap:10px;flex-wrap:wrap;padding:0 0 12px}
   form {
     margin-top: 14px;

@@ -1,9 +1,9 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { invoke, isTauri, isSelfhost } from "../../lib/runtime";
+  import { invoke, isTauri, isSelfhost, isPersistent } from "../../lib/runtime";
   import { selfRequest } from "../../lib/selfhost-auth";
+  import { confirmDialog } from "../../lib/dialog";
   import Icon from "../../lib/Icon.svelte";
-  import {isPersistent} from "../../lib/runtime";
   export let summary:boolean, open:()=>void;
   export let changed: () => Promise<void>;
   let connected = false,
@@ -104,6 +104,15 @@
     if (!userCode && tab) tab.close();
   }
   async function logout() {
+    if (
+      !(await confirmDialog({
+        title: "退出官网账户？",
+        description: "本地加密记录不会受影响，退出后云模型将暂停使用。",
+        confirmLabel: "退出登录",
+        danger: true,
+      }))
+    )
+      return;
     await run(async () => {
       if (timer) clearTimeout(timer);
       userCode = "";
@@ -173,10 +182,16 @@
     <div class="cloud-balance">
       <strong
         >{balance?.unlimited ? "不限次数" : (balance?.total ?? "—")}
-        <small>{balance?.unlimited ? "" : "次可用"}</small></strong
-      ><span
-        >本月 {balance?.monthly ?? "—"} · 永久加量 {balance?.topup ?? "—"}</span
-      ><button disabled={busy} on:click={() => run(refresh)}>刷新</button>
+        {#if !balance?.unlimited}<small>次可用</small>{/if}</strong
+      >
+      {#if !balance?.unlimited}
+        <span
+          >本月 {balance?.monthly ?? "—"} · 永久加量 {balance?.topup ?? "—"}</span
+        >
+      {:else}
+        <span>已享不限次云端整理额度</span>
+      {/if}
+      <button disabled={busy} on:click={() => run(refresh)}>刷新</button>
     </div>
     {#if balance?.models?.length}<label
         >云模型<select
@@ -197,24 +212,28 @@
             >{/each}</select
         ></label
       >{/if}
-    {#if features?.billing}<div class="cloud-actions">
-        <label
-          >币种<select bind:value={currency}
-            ><option value="cny">CNY ¥20</option><option value="hkd"
-              >HKD HK$23.50</option
-            ><option value="usd">USD US$2.99</option></select
-          ></label
-        ><button
-          disabled={busy || !features?.billing}
-          on:click={() => buy("monthly")}>月套餐 · 300 次</button
-        ><button
-          disabled={busy || !features?.billing}
-          on:click={() => buy("topup")}>加量包 · 300 次</button
-        >
-      </div>
+    {#if features?.billing}
+      {#if !balance?.unlimited}
+        <div class="cloud-actions">
+          <label
+            >币种<select bind:value={currency}
+              ><option value="cny">CNY ¥20</option><option value="hkd"
+                >HKD HK$23.50</option
+              ><option value="usd">USD US$2.99</option></select
+            ></label
+          ><button
+            disabled={busy || !features?.billing}
+            on:click={() => buy("monthly")}>月套餐 · 300 次</button
+          ><button
+            disabled={busy || !features?.billing}
+            on:click={() => buy("topup")}>加量包 · 300 次</button
+          >
+        </div>
+      {/if}
       <button disabled={busy || !features?.billing} on:click={portal}
         >管理订阅 / 付款</button
-      >{/if}
+      >
+    {/if}
   {:else}<button
       class="connect"
       disabled={busy || !!userCode}
@@ -222,9 +241,11 @@
     >{/if}
   {#if userCode}<div class="device-code">{userCode}</div>
     <a href={verificationUrl} target="_blank" rel="noreferrer">继续登录</a>{/if}
-  <a href="https://atlas.sayori.org/pricing" target="_blank" rel="noreferrer"
-    >查看套餐</a
-  >
+  {#if !balance?.unlimited}<a
+      href="https://atlas.sayori.org/pricing"
+      target="_blank"
+      rel="noreferrer">查看套餐</a
+    >{/if}
   {#if message}<p class="status" role="status">{message}</p>{/if}
 </div>
 {/if}

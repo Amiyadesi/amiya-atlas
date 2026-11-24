@@ -33,7 +33,7 @@ test("startup, dismissal and manual checks share one platform-aware result", asy
     page.getByRole("heading", { name: "应用更新", level: 1 }),
   ).toBeVisible();
   const panel = page.locator("#app-update");
-  await expect(panel).toContainText("0.9.5");
+  await expect(panel).toContainText("0.9.6");
   await expect(panel).toContainText("发现新版本 v1.0.0");
   await expect(
     panel.getByRole("button", { name: "GitHub 镜像加速下载" }),

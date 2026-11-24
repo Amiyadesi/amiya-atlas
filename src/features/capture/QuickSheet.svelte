@@ -1,6 +1,12 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import Icon from "../../lib/Icon.svelte";
+  import {
+    animateDialogClose,
+    backdropDismiss,
+    sheetDrag,
+    slidingIndicator,
+  } from "../../lib/motion";
   export let mode: "bill" | "asset",
     close: () => void,
     recording = false,
@@ -8,37 +14,54 @@
   let dialog: HTMLDialogElement;
   onMount(() => {
     dialog.showModal();
-    return () => dialog.close();
+    return () => {
+      if (dialog?.open) dialog.close();
+    };
   });
+  function requestClose() {
+    if (busy) return;
+    animateDialogClose(dialog, close, 180);
+  }
 </script>
 
 <dialog
   class="app-dialog quick-sheet"
   bind:this={dialog}
-  aria-label="快速记录"
-  on:cancel|preventDefault={() => {
-    if (!busy) close();
+  use:sheetDrag={{ enabled: () => !busy && !recording, onDismiss: close }}
+  use:backdropDismiss={{
+    enabled: () => !busy && !recording,
+    onDismiss: requestClose,
   }}
+  aria-label="快速记录"
+  on:cancel|preventDefault={requestClose}
 >
-  <div class="sheet-handle"></div>
-  <header>
-    <div class="segmented" role="group" aria-label="记录类型">
+  <div class="sheet-handle drag-zone" aria-hidden="true"><span></span></div>
+  <header class="drag-zone">
+    <div
+      class="segmented"
+      role="group"
+      aria-label="记录类型"
+      use:slidingIndicator
+    >
       <button
+        type="button"
         aria-pressed={mode === "bill"}
         disabled={recording || busy}
         on:click={() => (mode = "bill")}>记一笔</button
       >
       <button
+        type="button"
         aria-pressed={mode === "asset"}
         disabled={busy}
         on:click={() => (mode = "asset")}>记资产</button
       >
     </div>
     <button
+      type="button"
       class="icon-button"
       aria-label="关闭快速输入"
       disabled={busy}
-      on:click={close}><Icon name="Close" /></button
+      on:click={requestClose}><Icon name="Close" /></button
     >
   </header>
   <slot />
@@ -54,6 +77,9 @@
     border-radius: 22px;
     overflow: auto;
     overscroll-behavior: contain;
+  }
+  .sheet-handle {
+    display: none;
   }
   header {
     display: flex;
@@ -72,27 +98,34 @@
       width: 100%;
       max-width: 100%;
       max-height: calc(100dvh - env(safe-area-inset-top) - 12px);
-      padding: 8px max(18px, env(safe-area-inset-right))
+      padding: 6px max(18px, env(safe-area-inset-right))
         calc(16px + env(safe-area-inset-bottom))
         max(18px, env(safe-area-inset-left));
       border-radius: 22px 22px 0 0;
+      touch-action: pan-y;
     }
     .sheet-handle {
+      display: grid;
+      place-items: center;
+      padding: 8px 0 10px;
+      cursor: grab;
+      touch-action: none;
+    }
+    .sheet-handle span {
       height: 4px;
-      width: 36px;
+      width: 38px;
       background: var(--border-strong);
-      border-radius: 9px;
-      margin: 0 auto 12px;
+      border-radius: 99px;
+      opacity: 0.85;
     }
     @media (prefers-reduced-motion: no-preference) {
       .quick-sheet[open] {
-        animation: sheet-in 0.2s ease-out;
+        animation: rk-sheet-up var(--dur-sheet, 280ms) var(--ease-out, ease-out)
+          backwards;
       }
-      @keyframes sheet-in {
-        from {
-          transform: translateY(48px);
-          opacity: 0.5;
-        }
+      .quick-sheet:global(.is-closing) {
+        animation: rk-sheet-down var(--dur-micro, 160ms) var(--ease-in, ease-in)
+          forwards;
       }
     }
   }

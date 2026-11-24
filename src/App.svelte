@@ -24,6 +24,11 @@
   import {dateToday} from './domain/ledger';
   import {formatMoney,moneySchema} from './domain/money';
   import Icon from "./lib/Icon.svelte";
+  import {
+    cancelDialogClose,
+    prefersReducedMotion,
+    slidingIndicator,
+  } from "./lib/motion";
   import { onMount, tick } from "svelte";
   import { invoke, isPersistent, isHttpHost, isWindows, isMobile, isSelfhost, hasWebAccess, setWebAccess } from "./lib/runtime";
   import SyncSettings from "./features/sync/SyncSettings.svelte";
@@ -109,11 +114,20 @@
   let snapshot: VaultSnapshot = emptySnapshot();
   let page: Page = "Home";
   let mePage="", insight="回顾", filtersOpen=false, previewing=false;
+  let navDir: "tab" | "push" | "pop" = "tab";
   let original:Transaction|undefined, order:Entity|undefined;
   let menuOpen=false;
   $: activePage=page==="Explore"?"Memory":page==="Inbox"?"Home":page;
   $: ledgerTab=page==="Home"?"流水":page==="Settings"?"账户":insight;
-  function openSettings(title:string){navigate("Settings");mePage=title;}
+  function openSettings(title:string){
+    navDir = title ? "push" : "pop";
+    if (page !== "Settings") navigate("Settings");
+    mePage=title;
+    window.scrollTo(0, 0);
+  }
+  function autoFocus(node: HTMLElement) {
+    if (!isMobile) queueMicrotask(() => node.focus());
+  }
   async function routeSpecial(t:Transaction){
     if(t.kind==="TRADE"){navigate("Ledger");insight="投资";}
     else openSettings("资金账户与对账");
@@ -196,6 +210,9 @@
   }
   function startExpense(tx?:Transaction,source?:Entity){
     if(busy || !canSwitchCapture())return;
+    cancelDialogClose(
+      document.querySelector<HTMLDialogElement>("dialog.quick-sheet"),
+    );
     original=tx;order=source;previewing=false;captureMode="bill";quickOpen=true;error="";
   }
   let memoryView: "list" | "card" = "list", memorySort: MemorySort = "updated";
@@ -240,8 +257,11 @@
   let parsingId = "";
   let error = "";
   let notice = "";
+  let noticeAction: { label: string; run: () => void } | null = null;
   let noticeTimer: ReturnType<typeof setTimeout> | undefined;
   let selectedId = "";
+  let memoryScrollY = 0;
+  let lastOpenedEntityId = "";
   let rootId = "";
   let previewId = "";
   let config: ProviderConfig = { ...DEFAULT_PROVIDER };
@@ -344,18 +364,22 @@
       {title:"资金账户与对账",icon:"Wallet",tint:"var(--income)",value:(snapshot.ledgerAccounts??[]).filter(a=>a.privacy!=="SECRET").length+" 个账户"},
       {title:"备份与导出",icon:"Download",tint:"var(--info)",value:"加密备份"}]},
     {title:"智能与同步",rows:[
-      {title:"AI 模型",icon:"Action",tint:"var(--accent)",value:config.kind==="cloud"?"官网云服务":config.kind==="openai-compatible"?"自带 API":"本地模型"},
+      {title:"AI 模型",icon:"Action",tint:"var(--accent)",value:config.kind==="cloud"?"官网云服务":config.kind==="openai-compatible"?"自带 API":isMobile&&config.kind==="local"?"未配置":"本地模型"},
       {title:"多端同步",icon:"Sync",tint:"var(--income)",value:syncStatus.configured?(syncStatus.automatic?"已开启":"手动同步"):"未配置"},
       ...(!isMobile && !/Android|iPhone|iPad/i.test(navigator.userAgent)?[{title:"快捷与语音",icon:"Voice" as const,tint:"var(--warning)"}]:[])]},
     {title:"外观与安全",rows:[
       {title:"外观主题",icon:"Theme",tint:"var(--accent)"},
-      {title:"安全与锁屏",icon:"Shield",tint:"var(--info)",value:"锁定"},
+      {title:"安全与锁屏",icon:"Shield",tint:"var(--info)",value:"本机加密"},
       {title:"应用更新",icon:"Download",tint:"var(--accent)",value:updateInfo?.hasUpdate?"● 有新版本":"v"+APP_VERSION}]}];
   const readable = (e: unknown) => (e instanceof Error ? e.message : String(e));
-  function flash(message: string) {
+  function flash(message: string, action?: { label: string; run: () => void }) {
     if (noticeTimer) clearTimeout(noticeTimer);
     notice = message;
-    noticeTimer = setTimeout(() => notice = "", 5000);
+    noticeAction = action ?? null;
+    noticeTimer = setTimeout(() => {
+      notice = "";
+      noticeAction = null;
+    }, action ? 7000 : 5000);
   }
   function name(id: string) {
     return snapshot.entities.find((e) => e.id === id)?.name ?? "未知记忆";
@@ -377,6 +401,27 @@
   }
   function navigate(next: Page) {
     if (recording || voiceBusy) stopVoice();
+    const onSameRoot =
+      page === next && !mePage && !selectedId && !previewId;
+    if (onSameRoot) {
+      menuOpen = false;
+      window.scrollTo({
+        top: 0,
+        behavior: prefersReducedMotion() ? "auto" : "smooth",
+      });
+      return;
+    }
+    if (next === "Inbox") {
+      navDir = "push";
+    } else if (
+      (page === "Inbox" && next === "Home") ||
+      (mePage && next === "Settings") ||
+      (selectedId && next === "Memory")
+    ) {
+      navDir = "pop";
+    } else {
+      navDir = "tab";
+    }
     if (next === "Explore") rootId = "";
     page = next;mePage="";filtersOpen=false;menuOpen=false;
     window.scrollTo(0,0);
@@ -386,15 +431,38 @@
     error = "";
   }
   function openEntity(id: string) {
-    if (page === "Explore") { detailFromGraph=true;rootId=id; }
+    if (page === "Explore") {
+      detailFromGraph = true;
+      rootId = id;
+    } else if (page === "Memory" && !selectedId) {
+      memoryScrollY = window.scrollY;
+      lastOpenedEntityId = id;
+    }
+    navDir = "push";
     selectedId = id;
     page = "Memory";
     previewId = "";
     error = "";
+    window.scrollTo(0, 0);
   }
-  function closeDetail() {
-    if (detailFromGraph) page="Explore";
-    selectedId="";
+  async function closeDetail() {
+    navDir = "pop";
+    if (detailFromGraph) {
+      page = "Explore";
+      selectedId = "";
+      return;
+    }
+    const returnId = lastOpenedEntityId || selectedId;
+    selectedId = "";
+    await tick();
+    window.scrollTo(0, memoryScrollY);
+    if (returnId) {
+      document
+        .querySelector<HTMLButtonElement>(
+          `.entity-list-item[data-entity-id="${CSS.escape(returnId)}"]`,
+        )
+        ?.focus({ preventScroll: true });
+    }
   }
   async function favorite(entity: Entity) {
     if (busy) return;
@@ -816,10 +884,17 @@
       quickOpen = false;
       const input = snapshot.captures?.find((c) => !before.has(c.id));
       if (!input) throw new Error("原文保存失败");
-      navigate("Inbox");
-      notice = "";
-      if (parseNow) await parseCapture(input, true);
-      else flash("已存入待确认");
+      if (parseNow) {
+        navigate("Inbox");
+        notice = "";
+        noticeAction = null;
+        await parseCapture(input, true);
+      } else {
+        flash("已存入待确认", {
+          label: "查看",
+          run: () => navigate("Inbox"),
+        });
+      }
     } catch (e) {
       if (token === epoch) {
         error = readable(e);
@@ -891,6 +966,10 @@
   }
   async function dismiss(captureId: string) {
     if (busy) return;
+    const removed = snapshot.captures?.find((c) => c.id === captureId);
+    const dismissedProposalIds = (snapshot.proposals ?? [])
+      .filter((p) => p.captureId === captureId && p.status === "PENDING")
+      .map((p) => p.id);
     const token = epoch;
     busy = true;
     try {
@@ -898,7 +977,43 @@
       if (token !== epoch) return;
       snapshot = next;
       previewId = "";
-      flash("已移出待确认");
+      flash(
+        "已移出待确认",
+        removed
+          ? {
+              label: "撤销",
+              run: () => {
+                void restoreDismissedCapture(captureId, dismissedProposalIds);
+              },
+            }
+          : undefined,
+      );
+    } catch (e) {
+      if (token === epoch) error = readable(e);
+    } finally {
+      if (token === epoch) busy = false;
+    }
+  }
+  async function restoreDismissedCapture(
+    captureId: string,
+    proposalIds: string[],
+  ) {
+    if (busy) return;
+    const token = epoch;
+    busy = true;
+    try {
+      const restoreIds = new Set(proposalIds);
+      const next = structuredClone(snapshot);
+      next.captures = next.captures?.map((c) =>
+        c.id === captureId ? { ...c, status: "PENDING" } : c,
+      );
+      next.proposals = next.proposals?.map((p) =>
+        restoreIds.has(p.id) ? { ...p, status: "PENDING" } : p,
+      );
+      const saved = await saveSnapshot(next);
+      if (token !== epoch) return;
+      snapshot = saved;
+      flash("已恢复到待确认");
     } catch (e) {
       if (token === epoch) error = readable(e);
     } finally {
@@ -1000,6 +1115,9 @@
       return;
     }
     if (document.querySelector("dialog[open]") && !quickOpen) return;
+    cancelDialogClose(
+      document.querySelector<HTMLDialogElement>("dialog.quick-sheet"),
+    );
     if(!quickOpen){original=undefined;order=undefined;previewing=false;}
     captureMode="asset";quickOpen = true;
     await tick();
@@ -1276,6 +1394,7 @@
       {:else if mode !== "loading"}<form on:submit|preventDefault={enter}>
           <label
             >主密码<input
+              use:autoFocus
               type="password"
               bind:value={password}
               required
@@ -1364,9 +1483,9 @@
             >
           </div>{/if}
         {#if error}<div class="error" role="alert">
-            {error}<button class="text-button" aria-label="关闭错误提示" on:click={() => error = ""}>×</button>
+            <span>{error}</span><button class="text-button" aria-label="关闭错误提示" on:click={() => error = ""}>×</button>
           </div>{:else if notice && quickUndo?.revision!==snapshot.revision}<div class="notice" role="status">
-            {notice}<button aria-label="关闭提示" on:click={() => (notice = "")}
+            <span>{notice}</span>{#if noticeAction}<button class="notice-action" on:click={() => { const act = noticeAction; notice = ""; noticeAction = null; act?.run(); }}>{noticeAction.label}</button>{/if}<button aria-label="关闭提示" on:click={() => { notice = ""; noticeAction = null; }}
               >×</button
             >
           </div>{/if}
@@ -1384,7 +1503,7 @@
           </header>
         {:else if (page==="Memory" && !selected) || page==="Explore"}
           <header class="destination-header"><h1>资产</h1>
-            <div class="segmented" role="group" aria-label="资产视图">
+            <div class="segmented" role="group" aria-label="资产视图" use:slidingIndicator>
               <button aria-pressed={page==="Memory"} on:click={()=>navigate("Memory")}>列表</button>
               <button aria-pressed={page==="Explore"} on:click={()=>navigate("Explore")}>图谱</button>
             </div><div class="header-actions">
@@ -1394,6 +1513,7 @@
           </header>
         {/if}
         {#if page === "Inbox"}
+          <div class="view-stage dir-{navDir}">
           <button class="back-link" on:click={()=>navigate("Home")}><Icon name="Back"/>返回今日</button>
           {#if preview && previewCapture}<ProposalPreview
               record={preview}
@@ -1469,10 +1589,13 @@
                   >开始记录</button
                 >
               </div>{/if}{/if}
+          </div>
         {:else if page === "Memory"}
+          {#key selectedId}
+          <div class="view-stage dir-{navDir}">
           {#if selected}<div class="detail-header">
-              <button class="text-button" on:click={closeDetail}
-                >← {detailFromGraph?"返回关系图":"返回资产列表"}</button
+              <button class="back-link" on:click={closeDetail}
+                ><Icon name="Back"/>{detailFromGraph?"返回关系图":"返回资产列表"}</button
               ><div class="button-row"><button class="secondary" aria-pressed={selected.tags.some(isFavorite)} disabled={busy} on:click={()=>favorite(selected)}>{selected.tags.some(isFavorite)?"★ 已收藏":"☆ 收藏"}</button><button class="secondary" on:click={() => editRecord(selected)}>编辑</button><button class="primary" on:click={() => explore(selected.id)}>关系图</button></div>
             </div>
             <article class="detail-card">
@@ -1536,7 +1659,7 @@
                     </footer>
                   </blockquote>{/each}{/if}
             </article>{:else}
-            <div class="record-filters" aria-label="记录分类"><button class:chosen={!recordGroup && !connectionsOnly} on:click={() => {recordGroup = "";connectionsOnly=false;}}>全部</button>{#each RECORD_GROUPS as group}<button class:chosen={recordGroup === group.label} on:click={() => recordGroup = group.label}>{group.label}</button>{/each}{#if connectionNeeds.size}<button class:chosen={connectionsOnly} on:click={()=>connectionsOnly=!connectionsOnly}>待补关联 {connectionNeeds.size}</button>{/if}</div>
+            <div class="record-filters" aria-label="记录分类"><button class:chosen={!recordGroup && !connectionsOnly} on:click={() => {recordGroup = "";connectionsOnly=false;}}>全部</button>{#each RECORD_GROUPS as group}<button class:chosen={recordGroup === group.label} aria-pressed={recordGroup === group.label} on:click={() => recordGroup = recordGroup === group.label ? "" : group.label}>{group.label}</button>{/each}{#if connectionNeeds.size}<button class:chosen={connectionsOnly} aria-pressed={connectionsOnly} on:click={()=>connectionsOnly=!connectionsOnly}>待补关联 {connectionNeeds.size}</button>{/if}</div>
             <div class="search-box" role="search" aria-label="查找已确认的记忆">
               <Icon name="Search"/><input
                 bind:value={query}
@@ -1568,20 +1691,22 @@
                   ? ` · 地区 ${interpretedQuery.region}`
                   : ""}
               </p>{/if}
+            {#if results.length || query.trim() || recordGroup || connectionsOnly}
             <div class="list-heading">
               <span>{results.length} 项资产</span>
               {#if connectionNeeds.size}<button class="text-button" on:click={()=>connectionsOpen=true}>从字段补全关联</button>{/if}
-              <div class="memory-controls"><select aria-label="记忆排序" bind:value={memorySort}>{#each Object.entries(sortNames) as [key,title]}<option value={key}>{title}</option>{/each}</select>
-                <div class="segmented" role="group" aria-label="记忆视图">
+              {#if results.length}<div class="memory-controls"><select aria-label="记忆排序" bind:value={memorySort}>{#each Object.entries(sortNames) as [key,title]}<option value={key}>{title}</option>{/each}</select>
+                <div class="segmented" role="group" aria-label="记忆视图" use:slidingIndicator>
                   <button aria-pressed={memoryView === "list"} on:click={()=>memoryView="list"}><Icon name="List"/><span class="sr-only">行视图</span></button>
                   <button aria-pressed={memoryView === "card"} on:click={()=>memoryView="card"}><Icon name="Grid"/><span class="sr-only">卡片</span></button>
                 </div>
-              </div>
+              </div>{/if}
             </div>
-            {#if memorySort === "cost"}<p class="muted">按币种分组，同币种按月费从高到低排列。</p>{/if}
+            {/if}
+            {#if memorySort === "cost" && results.length}<p class="muted">按币种分组，同币种按月费从高到低排列。</p>{/if}
             {#if results.length}<div class="entity-list" class:cards={memoryView === "card"}>
                 {#each results as entity (entity.id)}{@const meta = memoryMeta.get(entity.id)!}
-                  <button class="entity-list-item" on:click={() => openEntity(entity.id)}>
+                  <button class="entity-list-item" data-entity-id={entity.id} on:click={() => openEntity(entity.id)}>
                     <span class="entity-icon" style={`--category:${memoryColors[categoryGroup(entity.category)]}`}>{entity.name.slice(0, 1).toUpperCase()}</span>
                     <div class="memory-identity"><strong>{entity.name}</strong>{#if meta.favorite}<span class="favorite-star" aria-label="已收藏">★</span>{/if}
                       <small><i class="category-dot" style:background={memoryColors[categoryGroup(entity.category)]}></i>{categoryLabel(entity.category)} · {meta.cost ? formatMoney(meta.cost)+" / 月" : meta.summary || statusLabel(entity.status)}{connectionNeeds.has(entity.id) ? " · 待补关联" : ""}</small>
@@ -1590,12 +1715,18 @@
                   </button>
                 {/each}
               </div>{:else}<div class="empty-state">
-                没有找到相关资产。试试名称、地区或备注中的关键词。
+                {#if query.trim() || recordGroup || connectionsOnly}
+                  没有找到相关资产。试试名称、地区或备注中的关键词。
+                {:else}
+                  还没有资产记录。点击右上角导入 Bitwarden，或新建第一条记录。
+                {/if}
               </div>{/if}{/if}
+          </div>
+          {/key}
         {:else if page === "Ledger"}
-          <div class="segmented insight-tabs" role="group" aria-label="洞察视图">{#each ["回顾","资源成本","投资","项目"] as tab}<button aria-pressed={insight===tab} on:click={()=>insight=tab}>{tab==="资源成本"?"订阅":tab}</button>{/each}</div>
+          <div class="segmented insight-tabs" role="group" aria-label="洞察视图" use:slidingIndicator>{#each ["回顾","资源成本","投资","项目"] as tab}<button aria-pressed={insight===tab} on:click={()=>insight=tab}>{tab==="资源成本"?"订阅":tab}</button>{/each}</div>
         {:else if page === "Explore"}
-          {#snippet graphSwitcher()}<div class="segmented graph-modes" role="group" aria-label="图谱视图"><button aria-pressed={graphMode==="relation"} on:click={()=>graphMode="relation"}>关系</button><button aria-pressed={graphMode==="money"} on:click={()=>graphMode="money"}>金钱</button></div>{/snippet}
+          {#snippet graphSwitcher()}<div class="segmented graph-modes" role="group" aria-label="图谱视图" use:slidingIndicator><button aria-pressed={graphMode==="relation"} on:click={()=>graphMode="relation"}>关系</button><button aria-pressed={graphMode==="money"} on:click={()=>graphMode="money"}>金钱</button></div>{/snippet}
           <div class="graph-workspace">
           {#if graphMode==="money"}<MoneyGraph {snapshot} {rootId} month={currentMonth} onFavorite={favorite} onConnect={e => editRecord(e,true)} onOpen={openEntity} {graphSwitcher}/>{:else}<ExploreCanvas
               {snapshot}
@@ -1603,6 +1734,8 @@
               onOpen={openEntity} onFavorite={favorite} onConnect={e => editRecord(e,true)}
             >{@render graphSwitcher()}</ExploreCanvas>{/if}</div>
         {:else if page === "Settings"}
+          {#key mePage}
+          <div class="view-stage dir-{navDir}">
           {#if mePage}<button class="back-link" on:click={()=>openSettings("")}><Icon name="Back"/>返回</button>{/if}
           <header class="destination-header"><h1>{mePage || "我的"}</h1></header>
           {#if !mePage || mePage==="官网账户"}<CloudSettings summary={!mePage} open={()=>openSettings("官网账户")} changed={async()=>{await refreshSnapshot();nextServerDiscovery=0;void sync();}}/>{/if}
@@ -1610,7 +1743,7 @@
             {#each settingsGroups as group}
               <section class="setting-group"><h2>{group.title}</h2><div class="setting-rows">
                 {#each group.rows as row}
-                  {#if row.title==="外观主题"}<div class="setting-row"><span class="setting-symbol" style:color={row.tint}><Icon name={row.icon}/></span><strong>{row.title}</strong><div class="segmented" role="group" aria-label="外观主题">
+                  {#if row.title==="外观主题"}<div class="setting-row"><span class="setting-symbol" style:color={row.tint}><Icon name={row.icon}/></span><strong>{row.title}</strong><div class="segmented" role="group" aria-label="外观主题" use:slidingIndicator>
                     {#each Object.entries(themeNames) as [key,label]}<button aria-pressed={$themePreference===key} on:click={()=>setTheme(key as Preference)}>{key==="system"?"自动":label}</button>{/each}</div></div>
                   {:else}<button class="setting-row" on:click={()=>row.title==="数据导入中心"?openImport():openSettings(row.title)}><span class="setting-symbol" style:color={row.tint}><Icon name={row.icon}/></span>
                     <strong>{row.title}</strong><small>{row.value}</small><Icon name="Chevron"/></button>{/if}
@@ -1837,10 +1970,12 @@
               </div>{/if}
           </section>
           {/if}
+          </div>
+          {/key}
         {/if}
         {#if page==="Home" || page==="Ledger" || (page==="Settings" && mePage==="资金账户与对账")}
-          {#key ledgerTab}<LedgerPage bind:this={ledgerPage} tab={ledgerTab} month={currentMonth} bind:filtersOpen {snapshot} {config} {download}
-            saved={next=>snapshot=next} stage={stageFinance} edit={entity=>editRecord(entity)} entry={startExpense} {routeSpecial}
+          {#key ledgerTab}<div class="view-stage dir-{navDir}"><LedgerPage bind:this={ledgerPage} tab={ledgerTab} month={currentMonth} bind:filtersOpen {snapshot} {config} {download}
+            saved={(next, msg) => { snapshot = next; if (msg) flash(msg); }} stage={stageFinance} edit={entity=>editRecord(entity)} entry={startExpense} {routeSpecial}
             openImport={()=>showImport("bills")} subscription={e=>{editRecord();draftEntity=e;}} showReview={()=>{navigate("Ledger");insight="回顾";}}>
           {#if pending.length || upcoming.length}<button class="pending-pill" on:click={()=>navigate("Inbox")}><Icon name="Inbox"/>{pending.length?pending.length+" 条待确认":"即将处理"}<Icon name="Chevron"/></button>{/if}
           <StarterCard {snapshot} open={showImport} save={saveLocal}/>
@@ -1874,7 +2009,7 @@
           </section>
         {/if}
           </svelte:fragment>
-          </LedgerPage>{/key}
+          </LedgerPage></div>{/key}
         {/if}
       </div>
     </main>
@@ -1923,4 +2058,12 @@
   .update-banner button { background: transparent; color: inherit; padding: 4px 0; font-size: inherit; }
   .update-banner button:hover { text-decoration: underline; }
   .update-banner .dismiss { margin-left: auto; color: var(--muted); }
+  .notice-action {
+    background: #6947e0 !important;
+    color: #ffffff !important;
+    font-size: 12px !important;
+    font-weight: 600;
+    padding: 4px 10px !important;
+    border-radius: 6px;
+  }
 </style>

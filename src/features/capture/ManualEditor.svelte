@@ -36,6 +36,8 @@
     type ConnectionSlot,
   } from "../../domain/relationships";
   import ConnectionPicker from "./ConnectionPicker.svelte";
+  import Icon from "../../lib/Icon.svelte";
+  import { animateDialogClose, backdropDismiss } from "../../lib/motion";
   export let snapshot: VaultSnapshot;
   export let initial:Entity|undefined=undefined;
   export let entity: Entity | undefined = undefined;
@@ -338,25 +340,61 @@
       busy = false;
     }
   }
+  const initialFingerprint = JSON.stringify({
+    name: draft.name,
+    category: draft.category,
+    status: draft.status,
+    privacy: draft.privacy,
+    tags,
+    fields: fields.map((f) => [f.key, f.text, f.asset, f.valueType, f.privacy]),
+    relations: relations.map((r) => [r.sourceId, r.targetId, r.type]),
+    events: events.map((e) => [e.type, e.dueAt, e.policy, e.status]),
+  });
+  function isDirty() {
+    return (
+      JSON.stringify({
+        name: draft.name,
+        category: draft.category,
+        status: draft.status,
+        privacy: draft.privacy,
+        tags,
+        fields: fields.map((f) => [
+          f.key,
+          f.text,
+          f.asset,
+          f.valueType,
+          f.privacy,
+        ]),
+        relations: relations.map((r) => [r.sourceId, r.targetId, r.type]),
+        events: events.map((e) => [e.type, e.dueAt, e.policy, e.status]),
+      }) !== initialFingerprint
+    );
+  }
+  function requestClose() {
+    if (busy) return;
+    animateDialogClose(dialog, close, 180);
+  }
 </script>
 
 <dialog
   bind:this={dialog}
-  class="manual-editor"
-  aria-labelledby="manual-title"
-  on:cancel|preventDefault={() => {
-    if (!busy) close();
+  use:backdropDismiss={{
+    enabled: () => !busy && !isDirty(),
+    onDismiss: requestClose,
   }}
+  class="app-dialog manual-editor"
+  aria-labelledby="manual-title"
+  on:cancel|preventDefault={requestClose}
 >
   <form on:submit|preventDefault={() => save()}>
     <header>
       <h2 id="manual-title">{entity ? "编辑记录" : "新建记录"}</h2>
       <button
         type="button"
-        class="text-button"
+        class="icon-button"
         aria-label="关闭"
         disabled={busy}
-        on:click={close}>×</button
+        on:click={requestClose}><Icon name="Close" /></button
       >
     </header>
     {#if error}<p class="error" role="alert">{error}</p>{/if}

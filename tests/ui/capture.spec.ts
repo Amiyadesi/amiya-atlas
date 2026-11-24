@@ -227,6 +227,10 @@ test("saving original text skips the model, then shows progress before a separat
   await dialog.getByLabel("告诉络笺一件事").fill(raw);
   await dialog.getByRole("button", { name: "先存原文" }).click();
   await expect(dialog).toHaveCount(0);
+  // Principle #6: saving raw text stays on current screen with non-intrusive toast + action
+  const notice = page.getByRole("status").filter({ hasText: "已存入待确认" });
+  await expect(notice).toBeVisible();
+  await notice.getByRole("button", { name: "查看" }).click();
   await expect(page.locator(".inbox-item")).toContainText(raw);
   await expect(page.getByRole("button", { name: "开始整理" })).toBeEnabled();
   const saved = await page.evaluate(async () => {

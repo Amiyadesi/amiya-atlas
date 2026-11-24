@@ -1,10 +1,38 @@
 <script lang="ts">
   import type { VaultSnapshot } from "../../lib/types";
-  import { ASSETS, formatMoney, units } from "../../domain/money";
+  import { formatMoney, units } from "../../domain/money";
   import { reviewSpending } from "../../domain/ledger-view";
   export let snapshot: VaultSnapshot, month: string;
   let asset = "CNY",
-    active = -1;
+    hovered = -1,
+    pinned = -1;
+  $: expenseIds = new Set(
+    (snapshot.ledgerAccounts ?? [])
+      .filter((a) => a.privacy !== "SECRET" && a.kind === "EXPENSE")
+      .map((a) => a.id),
+  );
+  $: monthAssets = [
+    ...new Set(
+      (snapshot.transactions ?? [])
+        .filter(
+          (t) =>
+            t.privacy !== "SECRET" &&
+            t.occurredAt.startsWith(month) &&
+            t.legs.some(
+              (l) => expenseIds.has(l.accountId) && units(l.money) !== 0n,
+            ),
+        )
+        .flatMap((t) =>
+          t.legs
+            .filter((l) => expenseIds.has(l.accountId) && units(l.money) !== 0n)
+            .map((l) => l.money.asset),
+        ),
+    ),
+  ];
+  $: if (monthAssets.length && !monthAssets.includes(asset)) {
+    asset = monthAssets[0];
+  }
+  $: active = hovered >= 0 ? hovered : pinned;
   $: data = reviewSpending(snapshot, month, asset);
   $: readout = data.days[active];
 </script>
@@ -12,27 +40,43 @@
 <section class="charts">
   <header>
     <h3>月度支出</h3>
-    <label
-      >{month}
-      <select aria-label="图表币种" bind:value={asset}
-        >{#each ASSETS as a}<option>{a.code}</option>{/each}</select
-      ></label
-    >
+    {#if monthAssets.length > 1}
+      <label
+        >{month}
+        <select aria-label="图表币种" bind:value={asset}
+          >{#each monthAssets as code}<option>{code}</option>{/each}</select
+        ></label
+      >
+    {:else}
+      <span class="period-meta">{month} · {asset}</span>
+    {/if}
   </header>
   <h4>每日支出趋势</h4>
   <div class="readout">
     {readout
       ? readout.date + " · " + formatMoney(readout.value)
-      : "移至柱条或用方向键查看金额"}
+      : "点选或移至柱条查看当日金额"}
   </div>
-  <div class="bars" role="group" aria-label="每日支出趋势柱状图">
+  <div
+    class="bars"
+    role="group"
+    aria-label="每日支出趋势柱状图"
+    on:pointerleave={() => (hovered = -1)}
+  >
     {#each data.days as d, i}<button
+        type="button"
         aria-label={d.date + " " + formatMoney(d.value)}
+        aria-pressed={pinned === i}
         title={d.date + " · " + formatMoney(d.value)}
         class:active={active === i}
-        on:pointerenter={() => (active = i)}
-        on:focus={() => (active = i)}
-        on:click={() => (active = i)}
+        on:pointerenter={(e) => {
+          if (e.pointerType !== "touch") hovered = i;
+        }}
+        on:focus={() => (pinned = i)}
+        on:click={() => {
+          pinned = pinned === i ? -1 : i;
+          hovered = -1;
+        }}
         on:keydown={(e) => {
           if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
             e.preventDefault();
@@ -45,7 +89,9 @@
           }
         }}
       >
-        <span class:negative={units(d.value) < 0n} style:height={d.height + "%"}
+        <span
+          class:negative={units(d.value) < 0n}
+          style:transform={`scaleY(${Math.max(d.height / 100, units(d.value) === 0n ? 0.01 : 0.03)})`}
         ></span></button
       >{/each}
   </div>
@@ -56,18 +102,21 @@
   <h4>支出分类占比</h4>
   {#each data.categories as c}<div class="rank">
       <span>{c.name}</span>
-      <div class="track"><i style:width={c.percent + "%"}></i></div>
+      <div class="track">
+        <i style:transform={`scaleX(${Math.min(1, Math.max(0, c.percent / 100))})`}></i>
+      </div>
       <b>{c.percent}%</b><strong>{formatMoney(c.value)}</strong>
     </div>{:else}<p class="muted">本月暂无此币种的支出。</p>{/each}
 </section>
 
 <style>
   .charts {
-    border: 1px solid var(--border);
-    border-radius: 12px;
+    border: 0;
+    border-radius: 16px;
     padding: 18px 22px;
     margin: 18px 0;
     background: var(--surface);
+    box-shadow: var(--shadow-sm);
   }
   header,
   .axis,
@@ -77,7 +126,8 @@
     justify-content: space-between;
     gap: 10px;
   }
-  header label {
+  header label,
+  .period-meta {
     display: flex;
     align-items: center;
     gap: 9px;
@@ -122,15 +172,20 @@
     align-items: end;
     padding: 0;
     background: transparent;
+    border-radius: 4px 4px 0 0;
   }
   .bars button.active {
     background: var(--accent-soft);
   }
   .bars span {
     background: var(--accent);
-    min-height: 1px;
+    height: 100%;
     width: 100%;
+    transform-origin: bottom center;
     border-radius: 3px 3px 0 0;
+    transition:
+      transform var(--dur-chart, 340ms) var(--ease-out, ease-out),
+      background-color var(--dur-micro, 150ms) var(--ease-out, ease-out);
   }
   .bars .negative {
     background: var(--income);
@@ -158,7 +213,11 @@
   }
   .track i {
     display: block;
+    width: 100%;
     height: 100%;
+    transform-origin: left center;
     background: var(--accent);
+    border-radius: 8px;
+    transition: transform var(--dur-chart, 340ms) var(--ease-out, ease-out);
   }
 </style>

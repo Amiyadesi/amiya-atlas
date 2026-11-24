@@ -284,4 +284,17 @@ input[aria-invalid="true"] { border-color: var(--red); }
   .budget { font-size: 11px; }
   .guide-layout aside a { font-size: 13px; }
 }
-@media (prefers-reduced-motion: reduce) { *, ::before, ::after { scroll-behavior: auto !important; } }
+@media (prefers-reduced-motion: no-preference) {
+  .button, .site-header nav a, .locale, .theme-toggle, .preview-tabs button, .asset-node .node-icon, .thread-map path, .inspect-links button, .entry-line button {
+    transition: background-color 150ms cubic-bezier(0.22, 1, 0.36, 1), border-color 150ms cubic-bezier(0.22, 1, 0.36, 1), color 150ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 180ms cubic-bezier(0.22, 1, 0.36, 1), transform 100ms cubic-bezier(0.22, 1, 0.36, 1), stroke 180ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .button:active:not(:disabled), .theme-toggle:active, .entry-line button:active { transform: scale(0.97); }
+  .asset-node:active .node-icon { transform: scale(0.94); }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

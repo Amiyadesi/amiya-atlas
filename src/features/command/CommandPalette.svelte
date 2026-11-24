@@ -9,6 +9,7 @@
     type Command,
   } from "./search";
   import Icon from "../../lib/Icon.svelte";
+  import { animateDialogClose, backdropDismiss } from "../../lib/motion";
   export let snapshot: VaultSnapshot;
   export let commands: Command[];
   export let pages: Command[];
@@ -45,8 +46,13 @@
   onMount(() => {
     dialog.showModal();
     input.focus();
-    return () => dialog.close();
+    return () => {
+      if (dialog?.open) dialog.close();
+    };
   });
+  function requestClose() {
+    animateDialogClose(dialog, close, 160);
+  }
   async function run(item?: Command, graph = false) {
     if (!item || item.disabled) return;
     close();
@@ -83,9 +89,10 @@
 
 <dialog
   bind:this={dialog}
+  use:backdropDismiss={{ onDismiss: requestClose }}
   class="app-dialog palette"
   aria-label="命令面板"
-  on:cancel|preventDefault={close}
+  on:cancel|preventDefault={requestClose}
 >
   <div class="query">
     <Icon name="Search" /><input
@@ -102,7 +109,7 @@
       placeholder="搜索记忆、账户或操作…"
       on:input={() => (index = 0)}
       on:keydown={key}
-    /><button class="escape" on:click={close} aria-label="关闭命令面板"
+    /><button class="escape" on:click={requestClose} aria-label="关闭命令面板"
       >Esc</button
     >
   </div>

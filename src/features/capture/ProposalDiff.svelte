@@ -99,7 +99,7 @@
           >{/if}
       </div>
       {#if change.automatic}<p class="diff-context">
-          随记忆删除
+          随这项记忆一起移除
         </p>{/if}
       <dl class="diff-rows">
         {#each change.rows as row}

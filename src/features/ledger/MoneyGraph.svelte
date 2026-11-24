@@ -42,6 +42,16 @@
       search: "",
     }),
   };
+  $: activeAssets = [
+    ...new Set(
+      (visible.transactions ?? [])
+        .filter((t) => t.occurredAt.startsWith(month) && t.privacy !== "SECRET")
+        .flatMap((t) => t.legs.map((l) => l.money.asset)),
+    ),
+  ];
+  $: if (mode === "flow" && activeAssets.length && !activeAssets.includes(asset)) {
+    asset = activeAssets[0];
+  }
   $: costs = monthlyCosts(visible, `${month}-01`);
   $: report = periodReport(visible, `${month}-01`, `${month}-31`);
   $: graph = withAllocations(snapshot, costs, asset);
@@ -274,13 +284,16 @@
 </script>
 
 {#snippet selectors(graphControls:boolean)}
+{#if graphControls || activeAssets.length > 1}
 <div class="money-toolbar">
+  {#if graphControls || activeAssets.length > 1}
   <label
     >币种<select bind:value={asset}
-      >{#each ASSETS as a}<option value={a.code}>{a.code}</option
+      >{#each (graphControls ? ASSETS.map(a => a.code) : activeAssets) as code}<option value={code}>{code}</option
         >{/each}</select
     ></label
-  >{#if graphControls}<label
+  >
+  {/if}{#if graphControls}<label
       >聚焦资产<select bind:value={rootId}
         ><option value="">全部资产</option
         >{#each snapshot.entities.filter((e) => e.privacy !== "SECRET") as e}<option
@@ -289,6 +302,7 @@
       ></label
     >{/if}
 </div>
+{/if}
 {/snippet}
 {#if mode==="flow"}<div class="flow-heading"><h3>资金流向</h3>{@render selectors(false)}</div>{/if}
 {#if mode === "graph"}
@@ -473,6 +487,9 @@
   .flow svg {
     width: 100%;
     display:block;
+  }
+  .flow path {
+    transition: opacity var(--dur-micro, 150ms) var(--ease-out, ease-out);
   }
   text {
     font-size: 12px;

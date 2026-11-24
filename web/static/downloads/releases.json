@@ -1,15 +1,15 @@
-{
-    "version":  "0.9.5",
-    "releasedAt":  "2026-11-23",
-    "notes":  "今日流水、资产图谱、洞察与我的四栏导航；快速记录面板；修正 Android 状态栏、手势区与键盘遮挡。",
+﻿{
+    "version":  "0.9.6",
+    "releasedAt":  "2026-11-24",
+    "notes":  "体验与动效全面打磨：统一流畅动效语言与可打断手势、手机端底部抽屉跟手下拉关闭、滑块分段指示器、智能识别导入与分类、就地冲正与防误触保护。",
     "assets":  {
                    "android":  {
-                                   "version":  "0.9.5",
-                                   "filename":  "Relakeep_0.9.5_arm64.apk",
-                                   "mirrorUrl":  "https://atlas.sayori.org/downloads/Relakeep_0.9.5_arm64.apk",
-                                   "githubUrl":  "https://github.com/Amiyadesi/amiya-atlas/releases/download/v0.9.5/Relakeep_0.9.5_arm64.apk",
-                                   "sha256":  "1663bf77ff6f4d8330ab99b78fd08bd454473c496c8bf83f9612991d6bbf28ac",
-                                   "size":  22021387
+                                   "version":  "0.9.6",
+                                   "filename":  "Relakeep_0.9.6_arm64.apk",
+                                   "mirrorUrl":  "https://atlas.sayori.org/downloads/Relakeep_0.9.6_arm64.apk",
+                                   "githubUrl":  "https://github.com/Amiyadesi/amiya-atlas/releases/download/v0.9.6/Relakeep_0.9.6_arm64.apk",
+                                   "sha256":  "fa3266410df98d1e78f2eb4d8e50ae89610df17f8e5b80ac2792d256bfa33580",
+                                   "size":  22032475
                                },
                    "windows":  {
                                    "version":  "0.9.3",

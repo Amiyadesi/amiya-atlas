@@ -23,6 +23,12 @@
   } from "../../domain/importers/apply";
   import { formatMoney, ASSETS } from "../../domain/money";
   import { categoryLabel } from "../../lib/record-labels";
+  import Icon from "../../lib/Icon.svelte";
+  import {
+    animateDialogClose,
+    backdropDismiss,
+    slidingIndicator,
+  } from "../../lib/motion";
   export let snapshot: VaultSnapshot;
   export let tab: ImportTab;
   export let close: () => void;
@@ -35,6 +41,7 @@
     filename = "",
     billText = "",
     error = "",
+    autoSwitchNote = "",
     busy = false,
     reading = false,
     drag = false;
@@ -104,13 +111,57 @@
     tab = next;
     preview = undefined;
     editing = "";
-    filename = billText = error = "";
+    filename = billText = error = autoSwitchNote = "";
     reading = drag = false;
     selected = new Set();
     subscriptions = new Set();
     search = filter = "";
     favorites = hideDuplicates = false;
     page = 0;
+  }
+  function requestClose() {
+    if (busy) return;
+    animateDialogClose(dialog, close, 180);
+  }
+  function detectTab(name: string, text: string, fallback: ImportTab): ImportTab {
+    const trimmed = text.replace(/^\uFEFF/, "").trimStart();
+    if (trimmed.startsWith("{") || /\.json$/i.test(name)) return "assets";
+    const lines = trimmed.split(/\r?\n/, 25).map((line) => line.trim());
+    const firstHeader = (lines[0] ?? "")
+      .toLowerCase()
+      .split(",")
+      .map((cell) => cell.replace(/^"|"$/g, "").trim());
+    const hasPasswordHeader =
+      firstHeader.some((h) =>
+        [
+          "login_uri",
+          "login_username",
+          "login_password",
+          "password",
+          "username",
+          "url",
+          "website",
+        ].includes(h),
+      ) &&
+      firstHeader.some((h) =>
+        ["login_password", "password", "login_username", "username"].includes(h),
+      );
+    if (hasPasswordHeader) return "assets";
+    if (
+      lines[0]?.startsWith("微信支付账单明细") ||
+      lines.some((l) => /^-{4,}.*支付宝|^支付宝(?:账户)?(?:交易)?明细/.test(l))
+    ) {
+      return "bills";
+    }
+    const hasBillHeader = lines.some((l) => {
+      const cols = l.split(",").map((c) => c.replace(/^"|"$/g, "").trim());
+      return (
+        cols.includes("交易时间") &&
+        (cols.includes("交易对方") || cols.includes("收/支"))
+      );
+    });
+    if (hasBillHeader) return "bills";
+    return fallback;
   }
   function install(p: AssetPreview | BillPreview) {
     preview = p;
@@ -132,6 +183,14 @@
     try {
       const text = decodeImportedFile(await file.arrayBuffer());
       if (token !== request) return;
+      const detected = detectTab(file.name, text, tab);
+      if (detected !== tab) {
+        tab = detected;
+        autoSwitchNote =
+          detected === "bills"
+            ? "已自动识别为账单文件并切换至「账单与流水」"
+            : "已自动识别为账号导出文件并切换至「账号与密码管理器」";
+      }
       if (tab === "assets")
         install(
           text.trimStart().startsWith("{") || /\.json$/i.test(file.name)
@@ -302,9 +361,10 @@
 
 <dialog
   bind:this={dialog}
+  use:backdropDismiss={{ enabled: () => !busy, onDismiss: requestClose }}
   class="app-dialog import-center"
   aria-labelledby="import-title"
-  on:cancel|preventDefault={() => !busy && close()}
+  on:cancel|preventDefault={requestClose}
 >
   <header>
     <div>
@@ -312,20 +372,28 @@
       <p class="muted">先预览，再写入记忆库。</p>
     </div>
     <button
+      type="button"
       class="icon-button"
       aria-label="关闭导入中心"
       disabled={busy}
-      on:click={close}>×</button
+      on:click={requestClose}><Icon name="Close" /></button
     >
   </header>
   <div class="import-body">
-    <div class="segmented" role="group" aria-label="导入类型">
+    <div
+      class="segmented"
+      role="group"
+      aria-label="导入类型"
+      use:slidingIndicator
+    >
       <button
+        type="button"
         aria-pressed={tab === "assets"}
         disabled={busy}
         on:click={() => reset("assets")}>账号与密码管理器</button
       >
       <button
+        type="button"
         aria-pressed={tab === "bills"}
         disabled={busy}
         on:click={() => reset("bills")}>账单与流水</button
@@ -335,7 +403,7 @@
     <input
       class="file-input"
       type="file"
-      accept={tab === "assets" ? ".csv,.json" : ".csv"}
+      accept=".csv,.json"
       bind:this={picker}
       on:change={(e) => {
         void read(e.currentTarget.files?.[0]);
@@ -369,6 +437,7 @@
     {#if tab === "assets" && !preview}<small class="export-note"
         >原导出文件仍含凭据，导入后请妥善保管或删除。</small
       >{/if}
+    {#if autoSwitchNote}<p class="auto-switch reveal-in" role="status">{autoSwitchNote}</p>{/if}
     {#if error}<p class="error" role="alert">{error}</p>{/if}
     {#if preview}
       {#if preview.kind === "bills" && preview.format === "generic"}
@@ -656,6 +725,14 @@
     color: var(--income);
     font-size: 13px;
     margin: 14px 0;
+  }
+  .auto-switch {
+    margin-top: 10px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: 12px;
   }
   .export-note {
     display: block;

@@ -4,6 +4,8 @@
   import { saveSnapshot } from "../../lib/api";
   import { relationLabel } from "../../lib/record-labels";
   import type { VaultSnapshot } from "../../lib/types";
+  import Icon from "../../lib/Icon.svelte";
+  import { animateDialogClose, backdropDismiss } from "../../lib/motion";
   export let snapshot: VaultSnapshot;
   export let saved: (value: VaultSnapshot) => void;
   export let close: () => void;
@@ -16,7 +18,16 @@
     busy = false,
     error = "",
     dialog: HTMLDialogElement;
-  onMount(() => dialog.showModal());
+  onMount(() => {
+    dialog.showModal();
+    return () => {
+      if (dialog?.open) dialog.close();
+    };
+  });
+  function requestClose() {
+    if (busy) return;
+    animateDialogClose(dialog, close, 180);
+  }
   async function save() {
     busy = true;
     error = "";
@@ -42,18 +53,19 @@
 
 <dialog
   bind:this={dialog}
+  use:backdropDismiss={{ enabled: () => !busy, onDismiss: requestClose }}
+  class="app-dialog"
   aria-labelledby="connection-review-title"
-  on:cancel|preventDefault={() => {
-    if (!busy) close();
-  }}
+  on:cancel|preventDefault={requestClose}
 >
   <header>
     <h2 id="connection-review-title">从已有字段补全关联</h2>
     <button
-      class="text-button"
+      type="button"
+      class="icon-button"
       aria-label="关闭"
       disabled={busy}
-      on:click={close}>×</button
+      on:click={requestClose}><Icon name="Close" /></button
     >
   </header>
   <div class="connection-list">

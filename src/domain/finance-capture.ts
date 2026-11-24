@@ -480,16 +480,18 @@ export function extractAmounts(raw: string): Money[] {
   }
   return found;
 }
+const strictFinancePattern =
+  /记账|花了|支出|付了|支付|续费|收入|收款|收到|转账|转入|转出|(?:没|未)付|撤销刚才|冲正|早餐|午餐|晚餐|早饭|午饭|晚饭|咖啡|奶茶|打车|车费/;
+const shorthandFinancePattern =
+  /记账|花了|支出|付了|支付|续费|收入|收款|收到|转账|转入|转出|(?:没|未)付|撤销刚才|冲正|早餐|午餐|晚餐|早饭|午饭|晚饭|外卖|夜宵|零食|咖啡|奶茶|打车|地铁|公交|高铁|机票|停车|加油|车费|房租|物业|水费|电费|话费|网费|超市|买菜|快递|电影|看病|买药|买书|理发/;
+
 export function localLedgerProposal(
   raw: string,
   s: VaultSnapshot,
   date = dateToday(),
+  shorthand = false,
 ): Proposal | null {
-  if (
-    !/记账|花了|支出|付了|支付|续费|收入|收款|收到|转账|转入|转出|(?:没|未)付|撤销刚才|冲正|早餐|午餐|晚餐|早饭|午饭|晚饭|咖啡|奶茶|打车|车费/.test(
-      raw,
-    )
-  )
+  if (!(shorthand ? shorthandFinancePattern : strictFinancePattern).test(raw))
     return null;
   const p = emptyProposal();
   p.financeActions = [];

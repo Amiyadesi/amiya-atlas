@@ -1,12 +1,28 @@
 <script lang="ts">
   import { activeDialog, finishDialog } from "./dialog";
+  import { animateDialogClose, backdropDismiss } from "./motion";
+  let dialogEl: HTMLDialogElement | undefined;
   function modal(node: HTMLDialogElement) {
+    dialogEl = node;
     node.showModal();
-    (
-      node.querySelector("input") ??
-      node.querySelector<HTMLButtonElement>('button[type="submit"]')
-    )?.focus();
-    return { destroy: () => node.close() };
+    const input = node.querySelector<HTMLInputElement>("input");
+    if (input) {
+      input.focus();
+    } else if ($activeDialog?.danger) {
+      // Destructive confirmations focus Cancel so reflex Enter cannot destroy data.
+      node.querySelector<HTMLButtonElement>('button[data-cancel="1"]')?.focus();
+    } else {
+      node.querySelector<HTMLButtonElement>('button[type="submit"]')?.focus();
+    }
+    return {
+      destroy: () => {
+        if (node.open) node.close();
+        if (dialogEl === node) dialogEl = undefined;
+      },
+    };
+  }
+  function dismiss() {
+    animateDialogClose(dialogEl, () => finishDialog(null), 160);
   }
   function submit(event: SubmitEvent) {
     const form = event.currentTarget as HTMLFormElement;
@@ -19,7 +35,8 @@
       );
       if (!input.reportValidity()) return;
     }
-    finishDialog(input?.value ?? "");
+    const result = input?.value ?? "";
+    animateDialogClose(dialogEl, () => finishDialog(result), 160);
   }
 </script>
 
@@ -27,12 +44,13 @@
   {#key $activeDialog}
     <dialog
       use:modal
+      use:backdropDismiss={{ onDismiss: dismiss }}
       class="app-dialog"
       aria-labelledby="confirmation-title"
       aria-describedby={$activeDialog.description
         ? "confirmation-description"
         : undefined}
-      on:cancel|preventDefault={() => finishDialog(null)}
+      on:cancel|preventDefault={dismiss}
     >
       <form on:submit|preventDefault={submit}>
         <h2 id="confirmation-title">{$activeDialog.title}</h2>
@@ -57,7 +75,8 @@
           <button
             class="secondary"
             type="button"
-            on:click={() => finishDialog(null)}>取消</button
+            data-cancel="1"
+            on:click={dismiss}>取消</button
           >
           <button
             class="primary"
@@ -74,6 +93,7 @@
   dialog {
     width: min(420px, calc(100vw - 32px));
     padding: 24px;
+    border-radius: 18px;
   }
   h2 {
     margin-bottom: 10px;

@@ -259,10 +259,10 @@
 <div class="section-heading">
   <h2>持仓</h2>
   <div class="button-row">
-    <button class="primary" on:click={() => (form = "trade")}>记录交易</button
+    <button class="primary" aria-expanded={form === "trade"} on:click={() => (form = form === "trade" ? "" : "trade")}>记录交易</button
     ><button class="secondary" disabled={loadingMarket} on:click={refreshMarket}
       >{loadingMarket ? "更新中…" : "刷新行情"}</button
-    ><button class="secondary" on:click={() => openPlan()}>交易计划</button>
+    ><button class="secondary" aria-expanded={form === "plan"} on:click={() => (form === "plan" && !editingPlan ? (form = "") : openPlan())}>交易计划</button>
   </div>
 </div>
 {#if form !== "trade" && form !== "plan"}<div class="market-quote">
